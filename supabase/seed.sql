@@ -1,0 +1,8 @@
+-- No business records are inserted automatically.
+--
+-- Create the first account through Supabase Auth and call bootstrap_business().
+-- That function creates the organization, main branch, administrator membership,
+-- default product categories, document counters, and initial settings.
+--
+-- Keeping this seed intentionally empty prevents demo products or customers from
+-- being pushed accidentally to a shared staging/production project.

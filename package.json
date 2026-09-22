@@ -13,6 +13,7 @@
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
+    "read-excel-file": "^9.3.10",
     "vite": "latest",
     "write-excel-file": "^4.1.1"
   },

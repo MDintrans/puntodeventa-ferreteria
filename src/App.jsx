@@ -46,6 +46,7 @@ import {
   Warehouse,
   X,
 } from 'lucide-react'
+import { createInitialLoadSheets, initialLoadTemplates, mergeInitialLoad, parseInitialLoadWorkbook } from './initialLoad'
 
 const money = new Intl.NumberFormat('es-CL', {
   style: 'currency',
@@ -62,10 +63,8 @@ const localDateKey = (date = new Date()) => {
   return `${year}-${month}-${day}`
 }
 
-const legacySaleDates = { 'V-2849': '2026-09-21', 'V-2848': '2026-09-21', 'V-2847': '2026-09-20', 'V-2846': '2026-08-28' }
-const legacySalePayments = { 'V-2849': 'Débito', 'V-2848': 'Efectivo', 'V-2847': 'Transferencia', 'V-2846': 'Crédito' }
-const getSaleDate = (sale) => sale.date || legacySaleDates[sale.id] || localDateKey()
-const getSalePayment = (sale) => sale.payment || legacySalePayments[sale.id] || 'Débito'
+const getSaleDate = (sale) => sale.date || localDateKey()
+const getSalePayment = (sale) => sale.payment || 'Débito'
 
 const getSaleTimestamp = (sale) => {
   if (sale.createdAt) {
@@ -112,7 +111,7 @@ const defaultSettings = {
     paymentMethods: ['Efectivo', 'Débito', 'Crédito', 'Transferencia'],
   },
   documents: {
-    saleSequence: 2850,
+    saleSequence: 1,
     quoteSequence: 1,
     quoteValidityDays: 15,
     receiptFormat: 'Térmica 80 mm',
@@ -148,63 +147,41 @@ const normalizeSettings = (value = {}) => ({
 const splitList = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean)
 const isLowStock = (product, settings) => settings.inventory.lowStockAlerts && product.stock <= (product.minStock ?? settings.inventory.defaultMinStock)
 
-const defaultProducts = [
-  { id: 1, sku: 'TAL-018', name: 'Taladro percutor 13 mm', category: 'Herramientas', brand: 'Bosch', stock: 14, minStock: 5, price: 69990, cost: 48500, location: 'A-01-02', unit: 'un', tone: 'blue' },
-  { id: 2, sku: 'DIS-412', name: 'Disco corte metal 4 1/2"', category: 'Accesorios', brand: 'DeWalt', stock: 48, minStock: 20, price: 2490, cost: 1280, location: 'B-03-01', unit: 'un', tone: 'yellow' },
-  { id: 3, sku: 'TOR-100', name: 'Tornillo volcanita 1" x 100', category: 'Fijaciones', brand: 'Mamut', stock: 8, minStock: 12, price: 4990, cost: 2850, location: 'C-01-04', unit: 'caja', tone: 'orange' },
-  { id: 4, sku: 'PIN-001', name: 'Pintura látex blanca 1 galón', category: 'Pinturas', brand: 'Ceresita', stock: 21, minStock: 8, price: 18990, cost: 12600, location: 'D-02-01', unit: 'galón', tone: 'white' },
-  { id: 5, sku: 'MAR-016', name: 'Martillo carpintero 16 oz', category: 'Herramientas', brand: 'Stanley', stock: 19, minStock: 6, price: 12990, cost: 7950, location: 'A-02-03', unit: 'un', tone: 'black' },
-  { id: 6, sku: 'SIL-300', name: 'Silicona transparente 300 ml', category: 'Adhesivos', brand: 'Sika', stock: 7, minStock: 10, price: 5990, cost: 3100, location: 'E-01-02', unit: 'un', tone: 'red' },
-  { id: 7, sku: 'CAN-200', name: 'Candado bronce 40 mm', category: 'Seguridad', brand: 'Odis', stock: 26, minStock: 8, price: 9990, cost: 5800, location: 'F-02-02', unit: 'un', tone: 'gold' },
-  { id: 8, sku: 'ALM-115', name: 'Alargador eléctrico 5 m', category: 'Electricidad', brand: 'Halux', stock: 13, minStock: 5, price: 8990, cost: 4900, location: 'G-01-01', unit: 'un', tone: 'green' },
-  { id: 9, sku: 'LLA-008', name: 'Llave ajustable 8"', category: 'Herramientas', brand: 'Bahco', stock: 17, minStock: 5, price: 16990, cost: 10300, location: 'A-03-02', unit: 'un', tone: 'silver' },
-  { id: 10, sku: 'PVC-020', name: 'Tubo PVC sanitario 40 mm', category: 'Gasfitería', brand: 'Vinilit', stock: 32, minStock: 10, price: 4490, cost: 2380, location: 'H-01-05', unit: 'tira', tone: 'white' },
-  { id: 11, sku: 'GUA-101', name: 'Guante cabritilla reforzado', category: 'Seguridad', brand: 'Steelpro', stock: 5, minStock: 12, price: 3990, cost: 1850, location: 'F-01-03', unit: 'par', tone: 'tan' },
-  { id: 12, sku: 'BRO-006', name: 'Broca concreto 6 mm', category: 'Accesorios', brand: 'Makita', stock: 41, minStock: 15, price: 2990, cost: 1470, location: 'B-02-04', unit: 'un', tone: 'teal' },
+const defaultProducts = []
+const defaultCustomers = []
+const defaultHeldSales = []
+const initialSales = []
+const initialReceipts = []
+const initialDispatches = []
+const defaultSuppliers = []
+
+const EMPTY_DATA_VERSION = 'empty-operational-data-v1'
+const operationalStorageKeys = [
+  'mf-products',
+  'mf-customers',
+  'mf-sales',
+  'mf-receipts',
+  'mf-dispatches',
+  'mf-suppliers',
+  'mf-held-sales',
+  'mf-quotes',
+  'mf-settings',
+  'mf-users',
+  'mf-current-user',
+  'mf-read-notifications',
+  'mf-quote-sequence',
+  'mf-held-sale-sequence',
 ]
 
-const defaultHeldSales = [
-  { id: 'ESP-001', date: '21 sep 2026', time: '10:36', customer: 'Constructora Andes', payment: 'Transferencia', lines: [{ ...defaultProducts[0], qty: 1 }, { ...defaultProducts[1], qty: 4 }], items: 5, total: 79950 },
-  { id: 'ESP-002', date: '21 sep 2026', time: '09:48', customer: 'Público general', payment: 'Efectivo', lines: [{ ...defaultProducts[4], qty: 1 }, { ...defaultProducts[10], qty: 2 }], items: 3, total: 20970 },
-]
-
-const initialSales = [
-  { id: 'V-2849', date: '2026-09-21', time: '11:42', customer: 'Constructora Andes', items: 8, payment: 'Débito', total: 146920, status: 'Completada' },
-  { id: 'V-2848', date: '2026-09-21', time: '11:18', customer: 'Público general', items: 3, payment: 'Efectivo', total: 22970, status: 'Completada' },
-  { id: 'V-2847', date: '2026-09-20', time: '10:54', customer: 'Servicios Rojas SpA', items: 12, payment: 'Transferencia', total: 284880, status: 'Completada' },
-  { id: 'V-2846', date: '2026-08-28', time: '10:21', customer: 'Público general', items: 2, payment: 'Crédito', total: 19980, status: 'Completada' },
-]
-
-const initialReceipts = [
-  { id: 'ING-148', date: '21 sep, 09:34', supplier: 'Comercial Bosch Ltda.', document: 'Factura 45821', units: 36, total: 1746000, status: 'Recibido' },
-  { id: 'ING-147', date: '20 sep, 16:12', supplier: 'Sodimac Mayorista', document: 'Factura 120938', units: 84, total: 932400, status: 'Recibido' },
-  { id: 'ING-146', date: '19 sep, 12:45', supplier: 'Distribuidora Mamut', document: 'Guía 008921', units: 120, total: 342000, status: 'Recibido' },
-]
-
-const initialDispatches = [
-  { id: 'DES-309', date: 'Hoy, 12:10', customer: 'Constructora Andes', order: 'Pedido #1842', units: 14, status: 'Preparando' },
-  { id: 'DES-308', date: 'Hoy, 10:05', customer: 'Obras del Sur Ltda.', order: 'Pedido #1841', units: 28, status: 'Despachado' },
-  { id: 'DES-307', date: 'Ayer, 16:38', customer: 'Servicios Rojas SpA', order: 'Pedido #1839', units: 9, status: 'Entregado' },
-]
-
-const defaultSuppliers = [
-  { id: 1, name: 'Comercial Bosch Ltda.', rut: '76.214.890-7', category: 'Herramientas eléctricas', contact: 'Daniela Muñoz', role: 'Ejecutiva comercial', phone: '+56 9 6124 8890', email: 'daniela.munoz@bosch.cl', address: 'Av. Américo Vespucio 2880, Quilicura', website: 'www.bosch.cl', paymentTerms: '30 días', leadTime: '3 a 5 días', lastOrder: '21 sep 2026', totalPurchases: 4876500, notes: 'Distribuidor principal de herramientas eléctricas y accesorios.', favorite: true, active: true, tone: 'blue' },
-  { id: 2, name: 'Sodimac Mayorista', rut: '96.792.430-K', category: 'Materiales generales', contact: 'Rodrigo Valdés', role: 'Ventas empresa', phone: '+56 2 2738 1040', email: 'empresas@sodimac.cl', address: 'Av. Presidente Eduardo Frei Montalva 3092, Renca', website: 'www.sodimac.cl', paymentTerms: 'Contado', leadTime: '1 a 2 días', lastOrder: '20 sep 2026', totalPurchases: 3218400, notes: 'Proveedor de respaldo para reposición rápida y compras mixtas.', favorite: true, active: true, tone: 'orange' },
-  { id: 3, name: 'Distribuidora Mamut', rut: '77.345.128-2', category: 'Fijaciones y adhesivos', contact: 'Javiera Soto', role: 'Jefa de cuentas', phone: '+56 9 7732 1184', email: 'pedidos@distribuidoramamut.cl', address: 'Los Gobelinos 2512, Renca', website: 'www.distribuidoramamut.cl', paymentTerms: '45 días', leadTime: '2 a 4 días', lastOrder: '19 sep 2026', totalPurchases: 1942000, notes: 'Buen precio por volumen en fijaciones. Pedido mínimo de $150.000.', favorite: false, active: true, tone: 'teal' },
-  { id: 4, name: 'Ferreimport SpA', rut: '78.119.650-4', category: 'Herramientas manuales', contact: 'Cristóbal Leiva', role: 'Representante zonal', phone: '+56 9 4280 5531', email: 'cleiva@ferreimport.cl', address: 'Camino Lo Boza 8840, Pudahuel', website: 'www.ferreimport.cl', paymentTerms: '30 días', leadTime: '5 a 7 días', lastOrder: '12 sep 2026', totalPurchases: 2760800, notes: 'Representante de Stanley y Bahco. Entregas los martes y jueves.', favorite: true, active: true, tone: 'purple' },
-  { id: 5, name: 'Pinturas del Pacífico', rut: '76.908.441-6', category: 'Pinturas y revestimientos', contact: 'Marcela Vergara', role: 'Asesora comercial', phone: '+56 9 9012 4476', email: 'mvergara@pinturaspacifico.cl', address: 'Av. Las Industrias 4610, San Joaquín', website: 'www.pinturaspacifico.cl', paymentTerms: '30 días', leadTime: '3 días', lastOrder: '08 sep 2026', totalPurchases: 1689500, notes: 'Mantiene carta de colores y material de exhibición en tienda.', favorite: false, active: true, tone: 'red' },
-  { id: 6, name: 'ElectroSur Distribución', rut: '77.650.983-4', category: 'Electricidad', contact: 'Andrés Pino', role: 'Encargado mayorista', phone: '+56 9 5321 9087', email: 'ventas@electrosur.cl', address: 'San Diego 1845, Santiago', website: 'www.electrosur.cl', paymentTerms: 'Contado', leadTime: '24 a 48 horas', lastOrder: '02 sep 2026', totalPurchases: 984600, notes: 'Despacho sin costo sobre $250.000 en la Región Metropolitana.', favorite: false, active: true, tone: 'green' },
-]
-
-const weeklySales = [
-  { day: 'Lun', value: 820000 },
-  { day: 'Mar', value: 1040000 },
-  { day: 'Mié', value: 760000 },
-  { day: 'Jue', value: 1280000 },
-  { day: 'Vie', value: 1470000 },
-  { day: 'Sáb', value: 930000 },
-  { day: 'Dom', value: 420000 },
-]
+const resetLegacyOperationalData = () => {
+  try {
+    if (localStorage.getItem('mf-data-version') === EMPTY_DATA_VERSION) return
+    operationalStorageKeys.forEach((key) => localStorage.removeItem(key))
+    localStorage.setItem('mf-data-version', EMPTY_DATA_VERSION)
+  } catch {
+    // The in-memory empty defaults still apply if storage is unavailable.
+  }
+}
 
 const navItems = [
   { id: 'dashboard', label: 'Resumen', icon: LayoutDashboard },
@@ -245,8 +222,6 @@ const rolePermissions = {
 
 const defaultUsers = [
   { id: 1, name: 'Matías Dintrans', email: 'matias@ferreterialosnogales.cl', role: 'Administrador', active: true, permissions: rolePermissions.Administrador },
-  { id: 2, name: 'Camila Soto', email: 'camila@ferreterialosnogales.cl', role: 'Vendedor', active: true, permissions: rolePermissions.Vendedor },
-  { id: 3, name: 'Rodrigo Pérez', email: 'rodrigo@ferreterialosnogales.cl', role: 'Bodeguero', active: true, permissions: rolePermissions.Bodeguero },
 ]
 
 const userInitials = (name) => String(name || '').split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join('').toUpperCase() || 'US'
@@ -270,8 +245,10 @@ function usePersistedState(key, fallback, normalize = (value) => value) {
 }
 
 function App() {
+  resetLegacyOperationalData()
   const [activeView, setActiveView] = useState('dashboard')
   const [products, setProducts] = usePersistedState('mf-products', defaultProducts)
+  const [customers, setCustomers] = usePersistedState('mf-customers', defaultCustomers)
   const [sales, setSales] = usePersistedState('mf-sales', initialSales)
   const [receipts, setReceipts] = usePersistedState('mf-receipts', initialReceipts)
   const [dispatches, setDispatches] = usePersistedState('mf-dispatches', initialDispatches)
@@ -410,14 +387,14 @@ function App() {
 
         <main className={`page-content page-${activeView}`}>
           {activeView === 'dashboard' && <Dashboard products={products} sales={sales} receipts={receipts} dispatches={dispatches} navigate={navigate} settings={settings} currentUser={currentUser} />}
-          {activeView === 'pos' && <PointOfSale products={products} setProducts={setProducts} sales={sales} setSales={setSales} heldSales={heldSales} setHeldSales={setHeldSales} setQuotes={setQuotes} notify={notify} settings={settings} setSettings={setSettings} currentUser={currentUser} can={can} />}
+          {activeView === 'pos' && <PointOfSale products={products} setProducts={setProducts} customers={customers} sales={sales} setSales={setSales} heldSales={heldSales} setHeldSales={setHeldSales} setQuotes={setQuotes} notify={notify} settings={settings} setSettings={setSettings} currentUser={currentUser} can={can} />}
           {activeView === 'inventory' && <Inventory products={products} setProducts={setProducts} notify={notify} settings={settings} currentUser={currentUser} can={can} />}
           {activeView === 'receipts' && <Receipts products={products} setProducts={setProducts} receipts={receipts} setReceipts={setReceipts} suppliers={suppliers} notify={notify} currentUser={currentUser} />}
-          {activeView === 'dispatches' && <Dispatches products={products} setProducts={setProducts} dispatches={dispatches} setDispatches={setDispatches} notify={notify} settings={settings} currentUser={currentUser} />}
-          {activeView === 'customers' && <Customers sales={sales} />}
+          {activeView === 'dispatches' && <Dispatches products={products} setProducts={setProducts} customers={customers} dispatches={dispatches} setDispatches={setDispatches} notify={notify} settings={settings} currentUser={currentUser} />}
+          {activeView === 'customers' && <Customers customers={customers} sales={sales} />}
           {activeView === 'suppliers' && <Suppliers suppliers={suppliers} setSuppliers={setSuppliers} notify={notify} currentUser={currentUser} />}
           {activeView === 'reports' && <Reports products={products} sales={sales} notify={notify} settings={settings} can={can} />}
-          {activeView === 'settings' && <Configuration settings={settings} setSettings={setSettings} products={products} setProducts={setProducts} sales={sales} setSales={setSales} receipts={receipts} setReceipts={setReceipts} dispatches={dispatches} setDispatches={setDispatches} suppliers={suppliers} setSuppliers={setSuppliers} heldSales={heldSales} setHeldSales={setHeldSales} quotes={quotes} setQuotes={setQuotes} users={users} setUsers={setUsers} currentUser={currentUser} setCurrentUserId={setCurrentUserId} readNotifications={readNotifications} setReadNotifications={setReadNotifications} initialSection={settingsSection} onSectionChange={setSettingsSection} notify={notify} />}
+          {activeView === 'settings' && <Configuration settings={settings} setSettings={setSettings} products={products} setProducts={setProducts} customers={customers} setCustomers={setCustomers} sales={sales} setSales={setSales} receipts={receipts} setReceipts={setReceipts} dispatches={dispatches} setDispatches={setDispatches} suppliers={suppliers} setSuppliers={setSuppliers} heldSales={heldSales} setHeldSales={setHeldSales} quotes={quotes} setQuotes={setQuotes} users={users} setUsers={setUsers} currentUser={currentUser} setCurrentUserId={setCurrentUserId} readNotifications={readNotifications} setReadNotifications={setReadNotifications} initialSection={settingsSection} onSectionChange={setSettingsSection} notify={notify} />}
         </main>
       </div>
 
@@ -481,17 +458,32 @@ function Dashboard({ products, sales, receipts, dispatches, navigate, settings, 
   const todaySales = sales.filter((sale) => getSaleDate(sale) === localDateKey())
   const todayTotal = todaySales.reduce((sum, sale) => sum + sale.total, 0)
   const inventoryValue = products.reduce((sum, product) => sum + product.cost * product.stock, 0)
-  const maxSale = Math.max(...weeklySales.map((item) => item.value))
+  const now = new Date()
+  const weekStart = new Date(now)
+  weekStart.setHours(0, 0, 0, 0)
+  weekStart.setDate(now.getDate() - ((now.getDay() + 6) % 7))
+  const weeklySales = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(weekStart)
+    date.setDate(weekStart.getDate() + index)
+    const dateKey = localDateKey(date)
+    return {
+      day: date.toLocaleDateString('es-CL', { weekday: 'short' }).replace('.', ''),
+      value: sales.filter((sale) => getSaleDate(sale) === dateKey).reduce((sum, sale) => sum + sale.total, 0),
+    }
+  })
+  const weeklyTotal = weeklySales.reduce((sum, item) => sum + item.value, 0)
+  const maxSale = Math.max(1, ...weeklySales.map((item) => item.value))
+  const todayLabel = now.toLocaleDateString('es-CL', { day: 'numeric', month: 'long' })
 
   return (
     <div className="dashboard">
       <section className="welcome-row">
-        <div><h2>Buenos días, {currentUser.name.split(' ')[0]}</h2><p>Esta es la actividad de tu ferretería hoy, 21 de septiembre.</p></div>
+        <div><h2>Buenos días, {currentUser.name.split(' ')[0]}</h2><p>Esta es la actividad de tu ferretería hoy, {todayLabel}.</p></div>
         <button className="primary-button" onClick={() => navigate('pos')}><ShoppingCart size={18} />Nueva venta</button>
       </section>
 
       <section className="kpi-grid" aria-label="Indicadores principales">
-        <Metric icon={CircleDollarSign} label="Ventas de hoy" value={money.format(todayTotal)} detail="12,4% vs. ayer" tone="positive" />
+        <Metric icon={CircleDollarSign} label="Ventas de hoy" value={money.format(todayTotal)} detail={todaySales.length ? 'Actividad registrada hoy' : 'Sin ventas registradas'} tone="positive" />
         <Metric icon={ReceiptText} label="Transacciones" value={todaySales.length} detail={`Ticket prom. ${money.format(todaySales.length ? todayTotal / todaySales.length : 0)}`} />
         <Metric icon={Warehouse} label="Valor inventario" value={money.format(inventoryValue)} detail={`${number.format(products.reduce((sum, p) => sum + p.stock, 0))} unidades`} />
         <Metric icon={AlertTriangle} label="Stock crítico" value={lowStock.length} detail="Requieren atención" tone="warning" />
@@ -503,11 +495,11 @@ function Dashboard({ products, sales, receipts, dispatches, navigate, settings, 
             <div><span className="eyebrow">Rendimiento</span><h3>Ventas de la semana</h3></div>
             <button className="text-button" onClick={() => navigate('reports')}>Ver reporte <ArrowRight size={16} /></button>
           </div>
-          <div className="chart-summary"><strong>{money.format(6720000)}</strong><span><ArrowUpRight size={14} /> 8,6% esta semana</span></div>
+            <div className="chart-summary"><strong>{money.format(weeklyTotal)}</strong><span><ArrowUpRight size={14} /> {sales.filter((sale) => getSaleTimestamp(sale) >= weekStart.getTime()).length} ventas esta semana</span></div>
           <div className="bar-chart" aria-label="Gráfico de ventas semanales">
             {weeklySales.map((item) => (
               <div className="bar-column" key={item.day}>
-                <div className="bar-track"><div className="bar" style={{ height: `${Math.max(12, (item.value / maxSale) * 100)}%` }}><span>{money.format(item.value)}</span></div></div>
+                <div className="bar-track"><div className="bar" style={{ height: item.value ? `${Math.max(12, (item.value / maxSale) * 100)}%` : '0%' }}><span>{money.format(item.value)}</span></div></div>
                 <small>{item.day}</small>
               </div>
             ))}
@@ -537,6 +529,7 @@ function Dashboard({ products, sales, receipts, dispatches, navigate, settings, 
                 <strong className="activity-total">{money.format(sale.total)}</strong>
               </div>
             ))}
+            {!sales.length && <EmptyState icon={ReceiptText} title="Sin ventas registradas" text="Las nuevas ventas aparecerán aquí." />}
           </div>
         </div>
 
@@ -550,13 +543,14 @@ function Dashboard({ products, sales, receipts, dispatches, navigate, settings, 
                 <span className="stock-count"><strong>{product.stock}</strong><small>{product.unit}</small></span>
               </button>
             ))}
+            {!lowStock.length && <EmptyState icon={PackageCheck} title="Sin alertas de stock" text="No hay productos que requieran reposición." />}
           </div>
         </div>
       </section>
 
       <section className="operation-strip">
-        <div><span className="strip-icon"><ArrowDownToLine size={20} /></span><span><small>Último ingreso</small><strong>{receipts[0]?.id} · {receipts[0]?.supplier}</strong></span></div>
-        <div><span className="strip-icon purple"><Truck size={20} /></span><span><small>Próximo despacho</small><strong>{dispatches[0]?.id} · {dispatches[0]?.customer}</strong></span></div>
+        <div><span className="strip-icon"><ArrowDownToLine size={20} /></span><span><small>Último ingreso</small><strong>{receipts[0] ? `${receipts[0].id} · ${receipts[0].supplier}` : 'Sin ingresos registrados'}</strong></span></div>
+        <div><span className="strip-icon purple"><Truck size={20} /></span><span><small>Próximo despacho</small><strong>{dispatches[0] ? `${dispatches[0].id} · ${dispatches[0].customer}` : 'Sin despachos registrados'}</strong></span></div>
         <button onClick={() => navigate('receipts')}>Ver movimientos <ArrowRight size={16} /></button>
       </section>
     </div>
@@ -574,7 +568,7 @@ function Metric({ icon: Icon, label, value, detail, tone }) {
   )
 }
 
-function PointOfSale({ products, setProducts, sales, setSales, heldSales, setHeldSales, setQuotes, notify, settings, setSettings, currentUser, can }) {
+function PointOfSale({ products, setProducts, customers, sales, setSales, heldSales, setHeldSales, setQuotes, notify, settings, setSettings, currentUser, can }) {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('Todos')
   const [cart, setCart] = useState([])
@@ -780,7 +774,7 @@ function PointOfSale({ products, setProducts, sales, setSales, heldSales, setHel
 
       <aside className="cart-panel">
         <div className="cart-heading"><div><span className="eyebrow">{settings.sales.register}</span><h2>Venta actual</h2></div><span className="cart-count">{cart.reduce((sum, item) => sum + item.qty, 0)}</span></div>
-        <label className="select-field"><UserRound size={17} /><select value={customer} onChange={(event) => setCustomer(event.target.value)}><option>Público general</option><option>Constructora Andes</option><option>Servicios Rojas SpA</option><option>Obras del Sur Ltda.</option></select><ChevronDown size={15} /></label>
+        <label className="select-field"><UserRound size={17} /><select value={customer} onChange={(event) => setCustomer(event.target.value)}><option>Público general</option>{customers.filter((item) => item.active !== false).map((item) => <option key={item.id || item.rut}>{item.name}</option>)}</select><ChevronDown size={15} /></label>
 
         <div className="cart-items">
           {cart.length === 0 ? (
@@ -1136,7 +1130,8 @@ function Receipts({ products, setProducts, receipts, setReceipts, suppliers, not
     event.preventDefault()
     if (!lines.length) return
     const data = new FormData(event.currentTarget)
-    const receipt = { id: `ING-${149 + receipts.length}`, date: 'Hoy, ' + new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }), supplier: data.get('supplier'), document: data.get('document'), units: lines.reduce((sum, line) => sum + line.qty, 0), total, status: 'Recibido', responsible: currentUser.name, userId: currentUser.id }
+    const sequence = receipts.reduce((highest, receipt) => Math.max(highest, Number(receipt.id.replace(/\D/g, '')) || 0), 0) + 1
+    const receipt = { id: `ING-${String(sequence).padStart(3, '0')}`, date: 'Hoy, ' + new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }), supplier: data.get('supplier'), document: data.get('document'), units: lines.reduce((sum, line) => sum + line.qty, 0), total, status: 'Recibido', responsible: currentUser.name, userId: currentUser.id }
     setProducts((current) => current.map((product) => {
       const received = lines.filter((line) => line.id === product.id).reduce((sum, line) => sum + line.qty, 0)
       const latest = [...lines].reverse().find((line) => line.id === product.id)
@@ -1185,7 +1180,7 @@ function Receipts({ products, setProducts, receipts, setReceipts, suppliers, not
   )
 }
 
-function Dispatches({ products, setProducts, dispatches, setDispatches, notify, settings, currentUser }) {
+function Dispatches({ products, setProducts, customers, dispatches, setDispatches, notify, settings, currentUser }) {
   const [showForm, setShowForm] = useState(false)
   const [lines, setLines] = useState([])
   const [productId, setProductId] = useState(String(products[0]?.id || ''))
@@ -1205,7 +1200,8 @@ function Dispatches({ products, setProducts, dispatches, setDispatches, notify, 
     event.preventDefault()
     if (!lines.length) return
     const data = new FormData(event.currentTarget)
-    const dispatch = { id: `DES-${310 + dispatches.length}`, date: 'Hoy, ' + new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }), customer: data.get('customer'), order: data.get('order'), units: lines.reduce((sum, line) => sum + line.qty, 0), status: 'Preparando', responsible: currentUser.name, userId: currentUser.id }
+    const sequence = dispatches.reduce((highest, dispatch) => Math.max(highest, Number(dispatch.id.replace(/\D/g, '')) || 0), 0) + 1
+    const dispatch = { id: `DES-${String(sequence).padStart(3, '0')}`, date: 'Hoy, ' + new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }), customer: data.get('customer'), order: data.get('order'), units: lines.reduce((sum, line) => sum + line.qty, 0), status: 'Preparando', responsible: currentUser.name, userId: currentUser.id }
     setProducts((current) => current.map((product) => {
       const outgoing = lines.filter((line) => line.id === product.id).reduce((sum, line) => sum + line.qty, 0)
       return outgoing ? { ...product, stock: product.stock - outgoing } : product
@@ -1237,7 +1233,7 @@ function Dispatches({ products, setProducts, dispatches, setDispatches, notify, 
       {showForm && (
         <Modal title="Nuevo despacho" subtitle="Reserva stock y prepara la salida" onClose={() => setShowForm(false)} wide>
           <form onSubmit={saveDispatch} className="receipt-form">
-            <div className="form-grid"><label>Cliente<select name="customer"><option>Constructora Andes</option><option>Servicios Rojas SpA</option><option>Obras del Sur Ltda.</option><option>Público general</option></select></label><label>Pedido / referencia<input name="order" required placeholder="Pedido #1843" /></label></div>
+            <div className="form-grid"><label>Cliente<select name="customer"><option>Público general</option>{customers.filter((item) => item.active !== false).map((item) => <option key={item.id || item.rut}>{item.name}</option>)}</select></label><label>Pedido / referencia<input name="order" required placeholder="Pedido #1" /></label></div>
             <div className="line-builder dispatch-line"><label>Producto<select value={productId} onChange={(event) => setProductId(event.target.value)}>{availableProducts.map((product) => <option value={product.id} key={product.id}>{product.sku} · {product.name} ({product.stock} disp.)</option>)}</select></label><label>Cantidad<input value={qty} onChange={(event) => setQty(event.target.value)} type="number" min="1" /></label><button type="button" className="secondary-button" onClick={addLine}><Plus size={17} />Agregar</button></div>
             <LineTable lines={lines} setLines={setLines} />
             <div className="document-total"><span>Total de unidades</span><strong>{lines.reduce((sum, line) => sum + line.qty, 0)}</strong></div>
@@ -1253,14 +1249,8 @@ function LineTable({ lines, setLines, valueKey }) {
   return <div className={`line-table ${valueKey ? 'with-value' : 'no-value'}`}><div className="line-table-head"><span>Producto</span><span>Cantidad</span>{valueKey && <span>Costo</span>}<span /></div>{lines.length ? lines.map((line, index) => <div className="line-table-row" key={`${line.id}-${index}`}><span><strong>{line.name}</strong><small>{line.sku}</small></span><span>{line.qty} {line.unit}</span>{valueKey && <span>{money.format(line.qty * line[valueKey])}</span>}<button type="button" onClick={() => setLines((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={16} /></button></div>) : <div className="line-table-empty">Agrega productos para continuar</div>}</div>
 }
 
-function Customers({ sales }) {
-  const customers = [
-    { name: 'Constructora Andes', rut: '76.532.112-8', contact: 'Paula Fuentes', phone: '+56 9 4521 7780', sales: 18, balance: 1245000, tone: 'teal' },
-    { name: 'Servicios Rojas SpA', rut: '77.102.880-3', contact: 'Felipe Rojas', phone: '+56 9 8841 2043', sales: 11, balance: 684200, tone: 'blue' },
-    { name: 'Obras del Sur Ltda.', rut: '76.981.340-K', contact: 'Carolina Soto', phone: '+56 9 6623 0918', sales: 9, balance: 429800, tone: 'orange' },
-    { name: 'Maestranza Central', rut: '78.441.729-1', contact: 'Luis Medina', phone: '+56 9 5912 3360', sales: 7, balance: 318900, tone: 'purple' },
-  ]
-  return <div className="module-page"><div className="module-toolbar"><div><h2>Clientes</h2><p>Cuentas comerciales, contactos e historial de compra.</p></div><button className="primary-button"><Plus size={18} />Nuevo cliente</button></div><section className="customer-grid">{customers.map((customer) => <div className="customer-card" key={customer.rut}><div className="customer-top"><span className={`customer-avatar ${customer.tone}`}>{customer.name.split(' ').slice(0, 2).map((word) => word[0]).join('')}</span><button className="row-action">Ver ficha</button></div><h3>{customer.name}</h3><p>{customer.rut}</p><div className="customer-contact"><span><UserRound size={15} />{customer.contact}</span><span>{customer.phone}</span></div><div className="customer-stats"><span><small>Compras</small><strong>{customer.sales}</strong></span><span><small>Total histórico</small><strong>{money.format(customer.balance)}</strong></span></div></div>)}</section><div className="customer-note"><Users size={19} /><span><strong>{new Set(sales.map((sale) => sale.customer)).size} clientes con actividad reciente</strong><small>La información se actualiza con cada venta registrada.</small></span></div></div>
+function Customers({ customers, sales }) {
+  return <div className="module-page"><div className="module-toolbar"><div><h2>Clientes</h2><p>Cuentas comerciales, contactos e historial de compra.</p></div><button className="primary-button"><Plus size={18} />Nuevo cliente</button></div><section className="customer-grid">{customers.length ? customers.map((customer) => <div className="customer-card" key={customer.id || customer.rut}><div className="customer-top"><span className={`customer-avatar ${customer.tone || 'teal'}`}>{customer.name.split(' ').slice(0, 2).map((word) => word[0]).join('')}</span><button className="row-action">Ver ficha</button></div><h3>{customer.name}</h3><p>{customer.rut}</p><div className="customer-contact"><span><UserRound size={15} />{customer.contact}</span><span>{customer.phone}</span></div><div className="customer-stats"><span><small>Compras</small><strong>{customer.sales || 0}</strong></span><span><small>Total histórico</small><strong>{money.format(customer.balance || 0)}</strong></span></div></div>) : <EmptyState icon={Users} title="Sin clientes registrados" text="Los clientes que agregues aparecerán aquí." />}</section><div className="customer-note"><Users size={19} /><span><strong>{new Set(sales.map((sale) => sale.customer).filter((customer) => customer && customer !== 'Público general')).size} clientes con actividad reciente</strong><small>La información se actualiza con cada venta registrada.</small></span></div></div>
 }
 
 function Suppliers({ suppliers, setSuppliers, notify }) {
@@ -1601,7 +1591,7 @@ function Reports({ products, sales, notify, settings, can }) {
   )
 }
 
-function Configuration({ settings, setSettings, products, setProducts, sales, setSales, receipts, setReceipts, dispatches, setDispatches, suppliers, setSuppliers, heldSales, setHeldSales, quotes, setQuotes, users, setUsers, currentUser, setCurrentUserId, readNotifications, setReadNotifications, initialSection, onSectionChange, notify }) {
+function Configuration({ settings, setSettings, products, setProducts, customers, setCustomers, sales, setSales, receipts, setReceipts, dispatches, setDispatches, suppliers, setSuppliers, heldSales, setHeldSales, quotes, setQuotes, users, setUsers, currentUser, setCurrentUserId, readNotifications, setReadNotifications, initialSection, onSectionChange, notify }) {
   const [section, setSection] = useState(initialSection)
   const [draft, setDraft] = useState(settings)
   const [confirmReset, setConfirmReset] = useState(false)
@@ -1618,6 +1608,7 @@ function Configuration({ settings, setSettings, products, setProducts, sales, se
     { id: 'inventory', label: 'Inventario', detail: 'Stock y catálogos', icon: Boxes },
     { id: 'notifications', label: 'Notificaciones', detail: 'Alertas del sistema', icon: Bell },
     ...(userCan(currentUser, 'manageUsers') ? [{ id: 'users', label: 'Usuarios y permisos', detail: 'Accesos y responsables', icon: Users }] : []),
+    { id: 'initial-load', label: 'Carga inicial', detail: 'Plantillas e importación', icon: Upload },
     { id: 'backup', label: 'Respaldo', detail: 'Exportar y restaurar', icon: Box },
   ]
 
@@ -1709,10 +1700,10 @@ function Configuration({ settings, setSettings, products, setProducts, sales, se
 
   const exportBackup = () => {
     const backup = {
-      version: 1,
+      version: 2,
       exportedAt: new Date().toISOString(),
       store: settings.business.name,
-      data: { settings, products, sales, receipts, dispatches, suppliers, heldSales, quotes, users, currentUserId: currentUser.id, readNotifications },
+      data: { settings, products, customers, sales, receipts, dispatches, suppliers, heldSales, quotes, users, currentUserId: currentUser.id, readNotifications },
     }
     const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }))
     const link = document.createElement('a')
@@ -1736,6 +1727,7 @@ function Configuration({ settings, setSettings, products, setProducts, sales, se
       if (!Array.isArray(restoredSettings.sales.paymentMethods) || !restoredSettings.sales.paymentMethods.length) throw new Error('invalid')
       setSettings(restoredSettings)
       setProducts(data.products)
+      setCustomers(Array.isArray(data.customers) ? data.customers : [])
       setSales(data.sales)
       setReceipts(Array.isArray(data.receipts) ? data.receipts : [])
       setDispatches(Array.isArray(data.dispatches) ? data.dispatches : [])
@@ -1757,6 +1749,7 @@ function Configuration({ settings, setSettings, products, setProducts, sales, se
     setSettings(defaultSettings)
     setDraft(defaultSettings)
     setProducts(defaultProducts)
+    setCustomers(defaultCustomers)
     setSales(initialSales)
     setReceipts(initialReceipts)
     setDispatches(initialDispatches)
@@ -1769,14 +1762,14 @@ function Configuration({ settings, setSettings, products, setProducts, sales, se
     localStorage.removeItem('mf-quote-sequence')
     localStorage.removeItem('mf-held-sale-sequence')
     setConfirmReset(false)
-    notify('Datos del sistema restaurados')
+    notify('ERP restablecido sin datos operativos')
   }
 
   return (
     <div className="module-page settings-page">
       <div className="module-toolbar">
         <div><h2>Configuración</h2><p>Administra los datos y preferencias operativas de la ferretería.</p></div>
-        {!['backup', 'users'].includes(section) && <button className="primary-button" type="submit" form="settings-form"><Save size={18} />Guardar cambios</button>}
+        {!['backup', 'users', 'initial-load'].includes(section) && <button className="primary-button" type="submit" form="settings-form"><Save size={18} />Guardar cambios</button>}
         {section === 'users' && <button className="primary-button" type="button" onClick={() => openUserForm()}><Plus size={18} />Nuevo usuario</button>}
       </div>
 
@@ -1874,6 +1867,8 @@ function Configuration({ settings, setSettings, products, setProducts, sales, se
             </div>
           </>}
 
+          {section === 'initial-load' && <InitialLoadPanel products={products} setProducts={setProducts} customers={customers} setCustomers={setCustomers} suppliers={suppliers} setSuppliers={setSuppliers} setSettings={setSettings} notify={notify} />}
+
           {section === 'backup' && <>
             <SettingsHeading icon={Box} title="Respaldo y restauración" text="Protege la información almacenada en este equipo." />
             <div className="backup-summary">
@@ -1885,14 +1880,14 @@ function Configuration({ settings, setSettings, products, setProducts, sales, se
             <div className="backup-actions">
               <button type="button" onClick={exportBackup}><span><Download size={20} /></span><span><strong>Descargar respaldo</strong><small>Exporta configuración y registros en formato JSON</small></span><ArrowRight size={16} /></button>
               <button type="button" onClick={() => importRef.current?.click()}><span><Upload size={20} /></span><span><strong>Restaurar respaldo</strong><small>Importa un archivo generado por este sistema</small></span><ArrowRight size={16} /></button>
-              <button type="button" className="danger" onClick={() => setConfirmReset(true)}><span><RotateCcw size={20} /></span><span><strong>Restaurar datos iniciales</strong><small>Reemplaza la información actual por los datos de demostración</small></span><ArrowRight size={16} /></button>
+              <button type="button" className="danger" onClick={() => setConfirmReset(true)}><span><RotateCcw size={20} /></span><span><strong>Vaciar datos del ERP</strong><small>Elimina los registros operativos y restablece la configuración</small></span><ArrowRight size={16} /></button>
               <input ref={importRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importBackup} />
             </div>
           </>}
         </form>
       </div>
 
-      {confirmReset && <Modal title="Restaurar datos iniciales" subtitle="Esta acción reemplazará los datos actuales" onClose={() => setConfirmReset(false)}>
+      {confirmReset && <Modal title="Vaciar datos del ERP" subtitle="Esta acción eliminará los registros actuales" onClose={() => setConfirmReset(false)}>
         <div className="reset-confirm"><AlertTriangle size={24} /><p>Descarga un respaldo antes de continuar si necesitas conservar tus ventas, productos o proveedores.</p></div>
         <div className="modal-actions"><button className="secondary-button" onClick={() => setConfirmReset(false)}>Cancelar</button><button className="danger-button confirm" onClick={restoreDefaults}><RotateCcw size={16} />Confirmar restauración</button></div>
       </Modal>}
@@ -1913,6 +1908,128 @@ function Configuration({ settings, setSettings, products, setProducts, sales, se
       </Modal>}
     </div>
   )
+}
+
+function InitialLoadPanel({ products, setProducts, customers, setCustomers, suppliers, setSuppliers, setSettings, notify }) {
+  const uploadRef = useRef(null)
+  const [preview, setPreview] = useState(null)
+  const [reading, setReading] = useState(false)
+  const [downloading, setDownloading] = useState(null)
+
+  const downloadTemplate = async (templateId = 'all') => {
+    setDownloading(templateId)
+    try {
+      const { default: writeExcelFile } = await import('write-excel-file/browser')
+      const selectedIds = templateId === 'all' ? initialLoadTemplates.map(({ id }) => id) : [templateId]
+      const template = initialLoadTemplates.find(({ id }) => id === templateId)
+      const fileName = templateId === 'all' ? 'plantilla-carga-inicial-erp.xlsx' : `plantilla-${template.sheet.toLowerCase()}.xlsx`
+      await writeExcelFile(createInitialLoadSheets(selectedIds), { fontFamily: 'Arial', fontSize: 10 }).toFile(fileName)
+      notify(templateId === 'all' ? 'Plantilla completa descargada' : `Plantilla de ${template.label.toLowerCase()} descargada`)
+    } catch {
+      notify('No fue posible generar la plantilla Excel', 'warning')
+    } finally {
+      setDownloading(null)
+    }
+  }
+
+  const readInitialLoad = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    setReading(true)
+    setPreview(null)
+    try {
+      const { default: readExcelFile } = await import('read-excel-file/browser')
+      const sheets = await readExcelFile(file)
+      const result = parseInitialLoadWorkbook(sheets, { products, customers, suppliers })
+      setPreview({ ...result, fileName: file.name })
+    } catch {
+      setPreview({
+        fileName: file.name,
+        datasets: { products: [], customers: [], suppliers: [], inventory: [] },
+        summary: Object.fromEntries(initialLoadTemplates.map(({ id }) => [id, { rows: 0, creates: 0, updates: 0 }])),
+        totalRows: 0,
+        sheets: [],
+        errors: [{ sheet: 'Archivo', row: null, message: 'El archivo no es un Excel .xlsx válido o está dañado.' }],
+      })
+    } finally {
+      setReading(false)
+    }
+  }
+
+  const confirmInitialLoad = () => {
+    if (!preview || preview.errors.length || !preview.totalRows) return
+    const merged = mergeInitialLoad(preview, { products, customers, suppliers })
+    setProducts(merged.products)
+    setCustomers(merged.customers)
+    setSuppliers(merged.suppliers)
+
+    const importedCategories = preview.datasets.products.map((product) => product.category).filter(Boolean)
+    if (importedCategories.length) {
+      setSettings((current) => ({
+        ...current,
+        inventory: {
+          ...current.inventory,
+          categories: [...new Set([...splitList(current.inventory.categories), ...importedCategories])].join(', '),
+        },
+      }))
+    }
+
+    notify(`${preview.totalRows} registros procesados correctamente`)
+    setPreview(null)
+  }
+
+  return <>
+    <SettingsHeading icon={Upload} title="Carga inicial" text="Descarga plantillas Excel, complétalas y valida la información antes de incorporarla." />
+
+    <div className="initial-load-notice">
+      <FileSpreadsheet size={20} />
+      <span><strong>Comienza con la plantilla completa</strong><small>Incluye productos, clientes, proveedores y existencias. Los usuarios, ventas y movimientos históricos no se importan desde esta sección.</small></span>
+      <button type="button" className="primary-button" disabled={Boolean(downloading)} onClick={() => downloadTemplate('all')}><Download size={17} />{downloading === 'all' ? 'Generando...' : 'Descargar plantilla completa'}</button>
+    </div>
+
+    <div className="initial-load-templates">
+      {initialLoadTemplates.map((template) => <article key={template.id}>
+        <span><FileSpreadsheet size={20} /></span>
+        <div><h4>{template.label}</h4><p>{template.description}</p><small>Clave de actualización: {template.keyLabel}</small></div>
+        <button type="button" className="secondary-button" disabled={Boolean(downloading)} onClick={() => downloadTemplate(template.id)}><Download size={15} />{downloading === template.id ? 'Generando...' : 'Plantilla'}</button>
+      </article>)}
+    </div>
+
+    <section className="initial-load-upload">
+      <div><span><Upload size={22} /></span><div><h4>Subir archivo completado</h4><p>Formato admitido: Excel (.xlsx). Puedes cargar una sola hoja o el archivo completo.</p></div></div>
+      <button type="button" className="primary-button" disabled={reading} onClick={() => uploadRef.current?.click()}>{reading ? 'Leyendo archivo...' : 'Seleccionar archivo'}</button>
+      <input ref={uploadRef} className="visually-hidden" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={readInitialLoad} />
+    </section>
+
+    {preview && <section className={`initial-load-preview ${preview.errors.length ? 'has-errors' : ''}`}>
+      <div className="initial-load-preview-head">
+        <div><span className={preview.errors.length ? 'warning' : 'success'}>{preview.errors.length ? <AlertTriangle size={18} /> : <Check size={18} />}</span><div><h4>{preview.errors.length ? 'El archivo necesita correcciones' : 'Archivo listo para importar'}</h4><p>{preview.fileName} · {preview.totalRows} filas válidas</p></div></div>
+        <button type="button" className="icon-button" onClick={() => setPreview(null)} aria-label="Cerrar vista previa"><X size={18} /></button>
+      </div>
+
+      <div className="initial-load-summary">
+        {initialLoadTemplates.map((template) => {
+          const summary = preview.summary[template.id]
+          const included = preview.sheets.includes(template.id)
+          return <div key={template.id} className={included ? '' : 'muted'}><span>{template.label}</span><strong>{summary.rows}</strong><small>{included ? `${summary.creates} nuevos · ${summary.updates} actualizaciones` : 'Hoja no incluida'}</small></div>
+        })}
+      </div>
+
+      {!!preview.errors.length && <div className="initial-load-errors">
+        <strong>{preview.errors.length} {preview.errors.length === 1 ? 'error encontrado' : 'errores encontrados'}</strong>
+        <div>{preview.errors.slice(0, 12).map((error, index) => <p key={`${error.sheet}-${error.row}-${index}`}><span>{error.sheet}{error.row ? ` · fila ${error.row}` : ''}</span>{error.message}</p>)}</div>
+        {preview.errors.length > 12 && <small>Hay {preview.errors.length - 12} errores adicionales. Corrige el archivo y vuelve a cargarlo.</small>}
+      </div>}
+
+      {!preview.errors.length && !preview.totalRows && <div className="initial-load-empty"><AlertTriangle size={18} /><span><strong>El archivo no contiene filas para importar</strong><small>Completa al menos una fila bajo los encabezados y vuelve a cargarlo.</small></span></div>}
+
+      <div className="initial-load-actions">
+        <button type="button" className="secondary-button" onClick={() => setPreview(null)}>Cancelar</button>
+        <button type="button" className="primary-button" disabled={Boolean(preview.errors.length) || !preview.totalRows} onClick={confirmInitialLoad}><Upload size={16} />Confirmar carga</button>
+      </div>
+    </section>}
+  </>
 }
 
 function SettingsHeading({ icon: Icon, title, text }) {
