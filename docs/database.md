@@ -1,85 +1,118 @@
-# Base de datos
+# Base de datos en Neon
 
-La primera versión usa PostgreSQL mediante Supabase. El esquema se encuentra en
-`supabase/migrations` y está diseñado para una o más sucursales.
+El ERP usa PostgreSQL en Neon. El esquema versionado está en
+`neon/migrations` y se instala con los comandos del propio proyecto.
 
-## Contenido
+La aplicación web no debe conectarse directamente a PostgreSQL: la cadena
+`DATABASE_URL` entrega acceso completo y debe permanecer exclusivamente en el
+servidor o API. Nunca debe renombrarse como `VITE_DATABASE_URL`.
 
-- Organizaciones, sucursales, perfiles y roles (`admin`, `seller`, `warehouse`).
+## Qué incluye el esquema
+
+- Organizaciones, sucursales, usuarios, sesiones y roles (`admin`, `seller`,
+  `warehouse`).
 - Productos, categorías, clientes y proveedores.
-- Inventario por sucursal e historial inmutable de movimientos.
-- Ventas, ingresos, despachos y cotizaciones con sus líneas de detalle.
-- Folios independientes por sucursal y tipo de documento.
-- Configuración del negocio y políticas Row Level Security.
+- Existencias por sucursal, reservas e historial de movimientos.
+- Ventas, detalle, medios de pago y ventas en espera.
+- Cajas, aperturas, cierres y movimientos de efectivo.
+- Ingresos de mercadería, despachos y cotizaciones.
+- Devoluciones de venta y reintegro de inventario.
+- Cargas iniciales, errores por fila y auditoría.
+- Folios atómicos por sucursal y tipo de documento.
+- Configuración del negocio y notificaciones leídas.
 
-Los montos se almacenan como pesos chilenos enteros. Las cantidades usan tres
-decimales para permitir unidades como metros o kilos.
+En total se crean 33 tablas de negocio, 6 funciones transaccionales y 2 vistas.
+Los montos se almacenan como pesos chilenos enteros (`bigint`) y las cantidades
+usan tres decimales para admitir unidades como metros o kilos.
 
-## Desarrollo local
+## Crear y configurar el proyecto
 
-Se necesita Docker Desktop (o un runtime compatible) y Supabase CLI.
+1. Crear un proyecto en la consola de Neon y seleccionar la región más próxima
+   al despliegue de la API.
+2. Abrir **Connect**, dejar habilitada la conexión **Pooled** y copiar la cadena
+   PostgreSQL completa.
+3. Crear el archivo local de secretos:
 
-```powershell
-npx supabase start
-npx supabase db reset
-npx supabase status
-```
+   ```powershell
+   Copy-Item .env.example .env.local
+   ```
 
-`db reset` reconstruye la base aplicando todas las migraciones y luego
-`supabase/seed.sql`. No debe ejecutarse contra una base de producción.
+4. Reemplazar el valor de `DATABASE_URL` en `.env.local`. Este archivo está
+   ignorado por Git y no se debe compartir ni subir al repositorio.
 
-Copiar `.env.example` como `.env.local` y completar la clave publicable que
-muestra `npx supabase status`. La clave `service_role` nunca debe incluirse en
-variables `VITE_*` ni enviarse al navegador.
+## Crear todas las tablas
 
-## Crear el primer negocio
-
-1. Crear el primer usuario desde Supabase Auth/Studio.
-2. Iniciar sesión con ese usuario desde la aplicación.
-3. Ejecutar una vez la función RPC:
-
-```js
-const { data, error } = await supabase.rpc('bootstrap_business', {
-  p_name: 'Ferretería Los Nogales',
-  p_branch_name: 'Casa Matriz',
-  p_rut: null,
-})
-```
-
-La función crea la organización, la sucursal principal, la membresía de
-administrador, las categorías iniciales y la configuración. Un usuario no puede
-ejecutarla nuevamente después de pertenecer a una organización.
-
-## Ingresar productos y stock inicial
-
-El producto se inserta primero en `products`. El stock no se escribe directamente:
-se registra mediante `adjust_inventory`, que actualiza la existencia y crea el
-movimiento de auditoría en la misma transacción.
-
-```js
-await supabase.rpc('adjust_inventory', {
-  p_branch_id: branchId,
-  p_product_id: productId,
-  p_quantity_delta: 25,
-  p_reason: 'Stock inicial',
-})
-```
-
-La vista `product_stock` entrega el catálogo junto con stock físico, reservado y
-disponible. `inventory_valuation` entrega la valorización por sucursal.
-
-## Proyecto remoto
-
-Después de crear un proyecto de desarrollo en Supabase:
+Desde la raíz del proyecto:
 
 ```powershell
-npx supabase login
-npx supabase link --project-ref ID_DEL_PROYECTO
-npx supabase db push --dry-run
-npx supabase db push
+npm install
+npm run db:validate
+npm run db:migrate
 ```
 
-El siguiente paso del proyecto es reemplazar gradualmente `localStorage` por un
-repositorio de datos Supabase, comenzando por autenticación, productos, clientes,
-proveedores y stock. Las operaciones de venta/ingreso/despacho deben incorporarse
-como funciones transaccionales antes de habilitar escritura multiusuario.
+`db:validate` levanta PostgreSQL en memoria y comprueba la sintaxis, relaciones,
+creación inicial, protección del último administrador y ajuste de inventario sin
+necesitar credenciales de Neon.
+
+El ejecutor registra cada archivo en `public.schema_migrations`, guarda su hash
+y ejecuta cada migración dentro de una transacción. Es seguro volver a ejecutar
+el comando: una migración ya aplicada se omite. Una migración aplicada nunca se
+edita; los cambios siguientes se agregan como un nuevo archivo SQL.
+
+Para comprobar una base existente:
+
+```powershell
+npm run db:verify
+```
+
+La validación exige que estén presentes las 33 tablas ERP, las 6 funciones, las
+2 vistas y el historial de migraciones.
+
+## Estado inicial
+
+La migración deja vacíos productos, clientes, proveedores, existencias y
+documentos. Tampoco crea contraseñas ni usuarios de demostración.
+
+La función `bootstrap_business` crea únicamente la organización, la Casa Matriz,
+la membresía de administrador, los folios, la caja principal y la configuración
+básica. Recibe el identificador de un usuario ya creado por la API:
+
+```sql
+select * from public.bootstrap_business(
+  'ID-UUID-DEL-USUARIO',
+  'Ferretería Los Nogales',
+  'Casa Matriz',
+  null
+);
+```
+
+Las contraseñas se guardan únicamente como hash bcrypt en
+`app_users.password_hash`. El alta y el inicio de sesión deben realizarse desde
+la API del ERP; nunca se envía ese hash al navegador.
+
+## Stock inicial
+
+No se debe modificar `branch_inventory` manualmente. La API debe ejecutar
+`adjust_inventory`, que bloquea la fila, valida el rol y registra el movimiento
+en la misma transacción:
+
+```sql
+select * from public.adjust_inventory(
+  'ID-UUID-DEL-USUARIO',
+  'ID-UUID-DE-LA-SUCURSAL',
+  'ID-UUID-DEL-PRODUCTO',
+  25,
+  'Stock inicial'
+);
+```
+
+`product_stock` entrega el catálogo con stock físico, reservado y disponible.
+`inventory_valuation` entrega la valorización por sucursal.
+
+## Integración pendiente con la interfaz
+
+La interfaz actual todavía conserva sus registros operacionales en
+`localStorage`. Montar el esquema no mueve esos datos automáticamente. El paso
+siguiente es agregar una API privada que maneje sesiones y traduzca las acciones
+de los módulos a transacciones PostgreSQL. La API usará `DATABASE_URL`; el
+navegador hablará sólo con endpoints HTTPS.

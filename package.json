@@ -6,12 +6,16 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "db:validate": "node scripts/validate-neon-schema.mjs",
+    "db:migrate": "node scripts/neon-db.mjs migrate",
+    "db:verify": "node scripts/neon-db.mjs verify"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "bcryptjs": "^3.0.3",
     "lucide-react": "latest",
+    "pg": "^8.23.0",
     "react": "latest",
     "react-dom": "latest",
     "read-excel-file": "^9.3.10",
@@ -19,6 +23,7 @@
     "write-excel-file": "^4.1.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.3.16",
     "playwright-core": "^1.63.0"
   }
 }
