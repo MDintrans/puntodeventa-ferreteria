@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import bcrypt from 'bcryptjs'
 import {
   AlertTriangle,
   ArrowDownToLine,
@@ -16,11 +17,15 @@ import {
   ClipboardCheck,
   Clock3,
   Download,
+  Eye,
+  EyeOff,
   FileText,
   FileSpreadsheet,
   Globe2,
   Hammer,
   LayoutDashboard,
+  KeyRound,
+  LogOut,
   Mail,
   MapPin,
   Menu,
@@ -37,6 +42,7 @@ import {
   Search,
   Settings,
   ShoppingCart,
+  ShieldCheck,
   Star,
   Trash2,
   Truck,
@@ -221,11 +227,80 @@ const rolePermissions = {
 }
 
 const defaultUsers = [
-  { id: 1, name: 'Matías Dintrans', email: 'matias@ferreterialosnogales.cl', role: 'Administrador', active: true, permissions: rolePermissions.Administrador },
+  { id: 1, username: 'matias', name: 'Matías Dintrans', email: 'matias@ferreterialosnogales.cl', role: 'Administrador', active: true, permissions: rolePermissions.Administrador },
 ]
 
 const userInitials = (name) => String(name || '').split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join('').toUpperCase() || 'US'
 const userCan = (user, permission) => Boolean(user?.active && user.permissions?.includes(permission))
+
+const AUTH_SESSION_KEY = 'mf-auth-session'
+const AUTH_SESSION_DURATION = 12 * 60 * 60 * 1000
+const PASSWORD_ITERATIONS = 210000
+const normalizeEmail = (email) => String(email || '').trim().toLowerCase()
+const normalizeUsername = (username) => String(username || '').trim().toLowerCase().replace(/\s+/g, '')
+const normalizeSearchValue = (value) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
+const getUsername = (user) => normalizeUsername(user?.username || normalizeEmail(user?.email).split('@')[0] || `usuario${user?.id || ''}`)
+const hasPasswordCredential = (user) => Boolean(user?.passwordHash && (user.passwordVersion === 2 || user.passwordSalt))
+const normalizeUsers = (value) => (Array.isArray(value) && value.length ? value : defaultUsers).map((user) => ({ ...user, username: getUsername(user) }))
+
+const passwordValidationMessage = (password) => {
+  if (password.length < 8) return 'La contraseña debe tener al menos 8 caracteres'
+  if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password)) return 'Incluye una mayúscula, una minúscula y un número'
+  return ''
+}
+
+const base64ToBytes = (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0))
+
+const derivePasswordHash = async (password, salt) => {
+  const material = await globalThis.crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  )
+  const result = await globalThis.crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: PASSWORD_ITERATIONS, hash: 'SHA-256' },
+    material,
+    256,
+  )
+  return new Uint8Array(result)
+}
+
+const createPasswordCredential = async (password) => {
+  const passwordHash = await bcrypt.hash(password, 10)
+  return { passwordSalt: null, passwordHash, passwordVersion: 2 }
+}
+
+const verifyPassword = async (password, user) => {
+  if (!hasPasswordCredential(user)) return false
+  try {
+    if (user.passwordVersion === 2 || user.passwordHash.startsWith('$2')) return await bcrypt.compare(password, user.passwordHash)
+    if (!globalThis.crypto?.subtle || !user.passwordSalt) return false
+    const expected = base64ToBytes(user.passwordHash)
+    const actual = await derivePasswordHash(password, base64ToBytes(user.passwordSalt))
+    if (expected.length !== actual.length) return false
+    let difference = 0
+    expected.forEach((value, index) => { difference |= value ^ actual[index] })
+    return difference === 0
+  } catch {
+    return false
+  }
+}
+
+const readAuthSession = () => {
+  try {
+    const session = JSON.parse(localStorage.getItem(AUTH_SESSION_KEY))
+    if (!session?.userId || Number(session.expiresAt) <= Date.now()) {
+      localStorage.removeItem(AUTH_SESSION_KEY)
+      return null
+    }
+    return session.userId
+  } catch {
+    localStorage.removeItem(AUTH_SESSION_KEY)
+    return null
+  }
+}
 
 function usePersistedState(key, fallback, normalize = (value) => value) {
   const [state, setState] = useState(() => {
@@ -256,15 +331,24 @@ function App() {
   const [heldSales, setHeldSales] = usePersistedState('mf-held-sales', defaultHeldSales)
   const [quotes, setQuotes] = usePersistedState('mf-quotes', [])
   const [settings, setSettings] = usePersistedState('mf-settings', defaultSettings, normalizeSettings)
-  const [users, setUsers] = usePersistedState('mf-users', defaultUsers)
+  const [users, setUsers] = usePersistedState('mf-users', defaultUsers, normalizeUsers)
   const [currentUserId, setCurrentUserId] = usePersistedState('mf-current-user', 1)
+  const [sessionUserId, setSessionUserId] = useState(readAuthSession)
   const [readNotifications, setReadNotifications] = usePersistedState('mf-read-notifications', {})
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [toast, setToast] = useState(null)
   const [notificationOpen, setNotificationOpen] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState('business')
-  const currentUser = users.find((user) => user.id === currentUserId && user.active) || users.find((user) => user.active) || defaultUsers[0]
+  const [globalQuery, setGlobalQuery] = useState('')
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false)
+  const [moduleSearch, setModuleSearch] = useState({ view: null, query: '', id: null })
+  const globalSearchInputRef = useRef(null)
+  const globalSearchRef = useRef(null)
+  const authenticatedUser = users.find((user) => String(user.id) === String(sessionUserId) && user.active) || null
+  const currentUser = authenticatedUser || users.find((user) => user.active) || defaultUsers[0]
+  const setupRequired = !users.some((user) => user.active && hasPasswordCredential(user))
+  const initialAdminUsername = getUsername(users.find((user) => user.active && user.role === 'Administrador') || defaultUsers[0])
   const can = (permission) => userCan(currentUser, permission)
 
   useEffect(() => {
@@ -274,24 +358,127 @@ function App() {
   }, [toast])
 
   useEffect(() => {
+    if (!sessionUserId || authenticatedUser) return
+    localStorage.removeItem(AUTH_SESSION_KEY)
+    setSessionUserId(null)
+  }, [sessionUserId, authenticatedUser])
+
+  useEffect(() => {
+    if (!authenticatedUser) return
+    try {
+      const session = JSON.parse(localStorage.getItem(AUTH_SESSION_KEY))
+      const remaining = Math.max(0, Number(session?.expiresAt) - Date.now())
+      const timer = window.setTimeout(() => {
+        localStorage.removeItem(AUTH_SESSION_KEY)
+        setSessionUserId(null)
+      }, remaining)
+      return () => window.clearTimeout(timer)
+    } catch {
+      localStorage.removeItem(AUTH_SESSION_KEY)
+      setSessionUserId(null)
+    }
+  }, [authenticatedUser?.id])
+
+  useEffect(() => {
+    if (!authenticatedUser) return
+    const handleGlobalSearchShortcut = (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        globalSearchInputRef.current?.focus()
+        setGlobalSearchOpen(true)
+      }
+      if (event.key === 'Escape') {
+        setGlobalSearchOpen(false)
+        globalSearchInputRef.current?.blur()
+      }
+    }
+    window.addEventListener('keydown', handleGlobalSearchShortcut)
+    return () => window.removeEventListener('keydown', handleGlobalSearchShortcut)
+  }, [authenticatedUser?.id])
+
+  useEffect(() => {
+    const closeGlobalSearch = (event) => {
+      if (!globalSearchRef.current?.contains(event.target)) setGlobalSearchOpen(false)
+    }
+    document.addEventListener('mousedown', closeGlobalSearch)
+    return () => document.removeEventListener('mousedown', closeGlobalSearch)
+  }, [])
+
+  useEffect(() => {
     if (can(activeView)) return
     const fallback = navItems.find((item) => can(item.id))?.id || 'dashboard'
     setActiveView(fallback)
   }, [activeView, currentUserId, users])
 
-  const navigate = (view) => {
+  const navigate = (view, search = null) => {
     if (!can(view)) {
       setToast({ message: 'Tu perfil no tiene acceso a este módulo', tone: 'warning' })
       return
     }
+    setModuleSearch(search ? { view, query: search.query || '', id: search.id || null } : { view: null, query: '', id: null })
     setActiveView(view)
     setSidebarOpen(false)
     setNotificationOpen(false)
     setAccountOpen(false)
+    setGlobalSearchOpen(false)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const notify = (message, tone = 'success') => setToast({ message, tone })
+
+  const establishAuthSession = (user) => {
+    localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({
+      userId: user.id,
+      createdAt: new Date().toISOString(),
+      expiresAt: Date.now() + AUTH_SESSION_DURATION,
+    }))
+    setUsers((current) => current.map((item) => item.id === user.id ? { ...item, lastLoginAt: new Date().toISOString() } : item))
+    setCurrentUserId(user.id)
+    setSessionUserId(user.id)
+  }
+
+  const loginWithPassword = async (username, password) => {
+    const normalizedLogin = normalizeUsername(username)
+    const user = users.find((item) => item.active && (getUsername(item) === normalizedLogin || normalizeEmail(item.email) === normalizeEmail(username)))
+    if (!user || !await verifyPassword(password, user)) return { error: 'Usuario o contraseña incorrectos' }
+    if (user.mustChangePassword) return { requiresPasswordChange: true, userId: user.id, name: user.name }
+    establishAuthSession(user)
+    return { success: true }
+  }
+
+  const initializeAdminAccess = async (username, password) => {
+    if (!setupRequired) return { error: 'El acceso inicial ya fue configurado' }
+    const validationError = passwordValidationMessage(password)
+    if (validationError) return { error: validationError }
+    const normalizedLogin = normalizeUsername(username)
+    const admin = users.find((user) => user.active && user.role === 'Administrador' && (getUsername(user) === normalizedLogin || normalizeEmail(user.email) === normalizeEmail(username)))
+    if (!admin) return { error: 'El usuario no corresponde a un administrador activo' }
+    const credential = await createPasswordCredential(password)
+    const initializedAdmin = { ...admin, ...credential, mustChangePassword: false }
+    setUsers((current) => current.map((user) => user.id === admin.id ? initializedAdmin : user))
+    establishAuthSession(initializedAdmin)
+    return { success: true }
+  }
+
+  const completeInitialPasswordChange = async (userId, password) => {
+    const validationError = passwordValidationMessage(password)
+    if (validationError) return { error: validationError }
+    const user = users.find((item) => item.id === userId && item.active)
+    if (!user) return { error: 'La cuenta ya no se encuentra disponible' }
+    const credential = await createPasswordCredential(password)
+    const updatedUser = { ...user, ...credential, mustChangePassword: false }
+    setUsers((current) => current.map((item) => item.id === user.id ? updatedUser : item))
+    establishAuthSession(updatedUser)
+    return { success: true }
+  }
+
+  const logout = () => {
+    localStorage.removeItem(AUTH_SESSION_KEY)
+    setSessionUserId(null)
+    setAccountOpen(false)
+    setNotificationOpen(false)
+    setSidebarOpen(false)
+  }
 
   const viewTitle = activeView === 'settings' ? 'Configuración' : navItems.find((item) => item.id === activeView)?.label || settings.business.name
   const lowStockCount = products.filter((product) => product.stock <= (product.minStock ?? settings.inventory.defaultMinStock)).length
@@ -317,6 +504,98 @@ function App() {
   }, [dispatches, lowStockCount, quotes, sales, settings.notifications, currentUserId, users])
   const readForCurrentUser = readNotifications[currentUser.id] || []
   const unreadNotifications = notifications.filter((item) => !readForCurrentUser.includes(item.id))
+  const globalSearchResults = useMemo(() => {
+    const query = normalizeSearchValue(globalQuery)
+    if (!query) return { products: [], documents: [] }
+
+    const productResults = can('inventory') ? products
+      .filter((product) => normalizeSearchValue(`${product.name} ${product.sku} ${product.brand} ${product.category}`).includes(query))
+      .sort((left, right) => {
+        const leftStarts = normalizeSearchValue(`${left.sku} ${left.name}`).startsWith(query) ? 0 : 1
+        const rightStarts = normalizeSearchValue(`${right.sku} ${right.name}`).startsWith(query) ? 0 : 1
+        return leftStarts - rightStarts || left.name.localeCompare(right.name, 'es')
+      })
+      .slice(0, 4)
+      .map((product) => ({
+        key: `product-${product.id}`,
+        icon: Hammer,
+        tone: 'product',
+        type: 'Producto',
+        title: product.name,
+        detail: `${product.sku} · ${product.stock} ${product.unit} disponibles`,
+        target: 'inventory',
+        query: product.sku,
+        recordId: product.id,
+      })) : []
+
+    const documentResults = [
+      ...sales.map((sale) => ({
+        key: `sale-${sale.id}`,
+        icon: ReceiptText,
+        tone: 'sale',
+        type: 'Venta',
+        title: sale.id,
+        detail: `${sale.customer} · ${money.format(sale.total)}`,
+        searchable: `${sale.id} ${sale.customer} ${sale.seller} ${sale.payment}`,
+        target: 'reports',
+        query: sale.id,
+        recordId: sale.id,
+      })),
+      ...receipts.map((receipt) => ({
+        key: `receipt-${receipt.id}`,
+        icon: ArrowDownToLine,
+        tone: 'receipt',
+        type: 'Ingreso',
+        title: receipt.id,
+        detail: `${receipt.supplier} · ${receipt.document}`,
+        searchable: `${receipt.id} ${receipt.supplier} ${receipt.document} ${receipt.responsible}`,
+        target: 'receipts',
+        query: receipt.id,
+        recordId: receipt.id,
+      })),
+      ...dispatches.map((dispatch) => ({
+        key: `dispatch-${dispatch.id}`,
+        icon: Truck,
+        tone: 'dispatch',
+        type: 'Despacho',
+        title: dispatch.id,
+        detail: `${dispatch.customer} · ${dispatch.status}`,
+        searchable: `${dispatch.id} ${dispatch.customer} ${dispatch.contact} ${dispatch.address} ${dispatch.order} ${dispatch.status}`,
+        target: 'dispatches',
+        query: dispatch.id,
+        recordId: dispatch.id,
+      })),
+      ...quotes.map((quote) => ({
+        key: `quote-${quote.id}`,
+        icon: FileText,
+        tone: 'quote',
+        type: 'Cotización',
+        title: quote.id,
+        detail: `${quote.customer} · ${money.format(quote.total)}`,
+        searchable: `${quote.id} ${quote.customer} ${quote.seller}`,
+        target: 'pos',
+        query: quote.id,
+        recordId: quote.id,
+      })),
+    ]
+      .filter((result) => can(result.target) && normalizeSearchValue(result.searchable).includes(query))
+      .slice(0, 6)
+
+    return { products: productResults, documents: documentResults }
+  }, [globalQuery, products, sales, receipts, dispatches, quotes, currentUser.id, users])
+  const flattenedSearchResults = [...globalSearchResults.products, ...globalSearchResults.documents]
+
+  const openGlobalSearchResult = (result) => {
+    setGlobalQuery('')
+    navigate(result.target, { query: result.query, id: result.recordId })
+  }
+
+  const handleGlobalSearchKeyDown = (event) => {
+    if (event.key === 'Enter' && flattenedSearchResults[0]) {
+      event.preventDefault()
+      openGlobalSearchResult(flattenedSearchResults[0])
+    }
+  }
 
   const markNotificationRead = (id) => setReadNotifications((current) => ({
     ...current,
@@ -332,6 +611,18 @@ function App() {
     ...current,
     [currentUser.id]: [...new Set([...(current[currentUser.id] || []), ...notifications.map((item) => item.id)])],
   }))
+
+  if (!authenticatedUser) {
+    return <LoginScreen
+      businessName={settings.business.name}
+      branchName={settings.business.branch}
+      setupRequired={setupRequired}
+      initialUsername={initialAdminUsername}
+      onLogin={loginWithPassword}
+      onSetup={initializeAdminAccess}
+      onCompletePasswordChange={completeInitialPasswordChange}
+    />
+  }
 
   return (
     <div className="app-shell">
@@ -349,11 +640,24 @@ function App() {
             </div>
           </div>
           <div className="topbar-actions">
-            <button className="header-search" onClick={() => navigate('inventory')}>
+            <div className={`header-search ${globalSearchOpen ? 'open' : ''}`} ref={globalSearchRef}>
               <Search size={17} />
-              <span>Buscar producto o documento</span>
-              <kbd>⌘ K</kbd>
-            </button>
+              <input ref={globalSearchInputRef} value={globalQuery} onChange={(event) => { setGlobalQuery(event.target.value); setGlobalSearchOpen(true) }} onFocus={() => setGlobalSearchOpen(true)} onKeyDown={handleGlobalSearchKeyDown} placeholder="Buscar producto o documento" aria-label="Buscar producto o documento" autoComplete="off" />
+              {globalQuery ? <button type="button" className="global-search-clear" onClick={() => { setGlobalQuery(''); globalSearchInputRef.current?.focus() }} aria-label="Limpiar búsqueda"><X size={15} /></button> : <kbd>Ctrl K</kbd>}
+              {globalSearchOpen && <div className="global-search-panel">
+                {!globalQuery.trim() ? <div className="global-search-empty"><Search size={21} /><span><strong>Búsqueda global</strong><small>Escribe un nombre, SKU, folio, cliente o documento.</small></span></div> : !flattenedSearchResults.length ? <div className="global-search-empty"><Search size={21} /><span><strong>Sin coincidencias</strong><small>No encontramos productos ni documentos para “{globalQuery}”.</small></span></div> : <div className="global-search-results">
+                  {!!globalSearchResults.products.length && <section><h4>Productos</h4>{globalSearchResults.products.map((result) => {
+                    const Icon = result.icon
+                    return <button type="button" key={result.key} onClick={() => openGlobalSearchResult(result)}><span className={`global-result-icon ${result.tone}`}><Icon size={17} /></span><span><small>{result.type}</small><strong>{result.title}</strong><em>{result.detail}</em></span><ArrowRight size={15} /></button>
+                  })}</section>}
+                  {!!globalSearchResults.documents.length && <section><h4>Documentos</h4>{globalSearchResults.documents.map((result) => {
+                    const Icon = result.icon
+                    return <button type="button" key={result.key} onClick={() => openGlobalSearchResult(result)}><span className={`global-result-icon ${result.tone}`}><Icon size={17} /></span><span><small>{result.type}</small><strong>{result.title}</strong><em>{result.detail}</em></span><ArrowRight size={15} /></button>
+                  })}</section>}
+                </div>}
+                <div className="global-search-footer"><span><kbd>Enter</kbd> abrir primer resultado</span><span><kbd>Esc</kbd> cerrar</span></div>
+              </div>}
+            </div>
             <div className="notification-wrap">
               <button className="icon-button notification-button" onClick={() => setNotificationOpen((value) => !value)} aria-label="Notificaciones">
                 <Bell size={19} />
@@ -372,14 +676,14 @@ function App() {
               )}
             </div>
             <div className="user-menu-wrap">
-              <button className="user-chip" onClick={() => { setAccountOpen((value) => !value); setNotificationOpen(false) }} aria-label="Cambiar usuario">
+              <button className="user-chip" onClick={() => { setAccountOpen((value) => !value); setNotificationOpen(false) }} aria-label="Abrir menú de usuario">
                 <span className="avatar">{userInitials(currentUser.name)}</span>
                 <span className="user-copy"><strong>{currentUser.name.split(' ')[0]}</strong><small>{currentUser.role}</small></span>
                 <ChevronDown size={15} />
               </button>
               {accountOpen && <div className="user-menu">
-                <div className="user-menu-heading"><strong>Usuario activo</strong><small>{currentUser.email}</small></div>
-                {users.filter((user) => user.active).map((user) => <button key={user.id} className={user.id === currentUser.id ? 'active' : ''} onClick={() => { setCurrentUserId(user.id); setAccountOpen(false) }}><span className="avatar small">{userInitials(user.name)}</span><span><strong>{user.name}</strong><small>{user.role}</small></span>{user.id === currentUser.id && <Check size={15} />}</button>)}
+                <div className="user-menu-heading"><strong>{currentUser.name}</strong><small>{currentUser.email}</small><span>{currentUser.role}</span></div>
+                <button className="user-menu-logout" type="button" onClick={logout}><LogOut size={17} /><span><strong>Cerrar sesión</strong><small>Salir de forma segura</small></span><ArrowRight size={15} /></button>
               </div>}
             </div>
           </div>
@@ -387,13 +691,13 @@ function App() {
 
         <main className={`page-content page-${activeView}`}>
           {activeView === 'dashboard' && <Dashboard products={products} sales={sales} receipts={receipts} dispatches={dispatches} navigate={navigate} settings={settings} currentUser={currentUser} />}
-          {activeView === 'pos' && <PointOfSale products={products} setProducts={setProducts} customers={customers} sales={sales} setSales={setSales} heldSales={heldSales} setHeldSales={setHeldSales} setQuotes={setQuotes} notify={notify} settings={settings} setSettings={setSettings} currentUser={currentUser} can={can} />}
-          {activeView === 'inventory' && <Inventory products={products} setProducts={setProducts} notify={notify} settings={settings} currentUser={currentUser} can={can} />}
-          {activeView === 'receipts' && <Receipts products={products} setProducts={setProducts} receipts={receipts} setReceipts={setReceipts} suppliers={suppliers} notify={notify} currentUser={currentUser} />}
-          {activeView === 'dispatches' && <Dispatches products={products} setProducts={setProducts} customers={customers} dispatches={dispatches} setDispatches={setDispatches} notify={notify} settings={settings} currentUser={currentUser} />}
+          {activeView === 'pos' && <PointOfSale products={products} setProducts={setProducts} customers={customers} sales={sales} setSales={setSales} heldSales={heldSales} setHeldSales={setHeldSales} quotes={quotes} setQuotes={setQuotes} notify={notify} settings={settings} setSettings={setSettings} currentUser={currentUser} can={can} initialQuoteId={moduleSearch.view === 'pos' ? moduleSearch.id : null} />}
+          {activeView === 'inventory' && <Inventory products={products} setProducts={setProducts} notify={notify} settings={settings} currentUser={currentUser} can={can} initialQuery={moduleSearch.view === 'inventory' ? moduleSearch.query : ''} />}
+          {activeView === 'receipts' && <Receipts products={products} setProducts={setProducts} receipts={receipts} setReceipts={setReceipts} suppliers={suppliers} notify={notify} currentUser={currentUser} highlightId={moduleSearch.view === 'receipts' ? moduleSearch.id : null} />}
+          {activeView === 'dispatches' && <Dispatches products={products} setProducts={setProducts} customers={customers} dispatches={dispatches} setDispatches={setDispatches} notify={notify} settings={settings} currentUser={currentUser} highlightId={moduleSearch.view === 'dispatches' ? moduleSearch.id : null} />}
           {activeView === 'customers' && <Customers customers={customers} sales={sales} />}
           {activeView === 'suppliers' && <Suppliers suppliers={suppliers} setSuppliers={setSuppliers} notify={notify} currentUser={currentUser} />}
-          {activeView === 'reports' && <Reports products={products} sales={sales} notify={notify} settings={settings} can={can} />}
+          {activeView === 'reports' && <Reports products={products} sales={sales} notify={notify} settings={settings} can={can} initialQuery={moduleSearch.view === 'reports' ? moduleSearch.query : ''} />}
           {activeView === 'settings' && <Configuration settings={settings} setSettings={setSettings} products={products} setProducts={setProducts} customers={customers} setCustomers={setCustomers} sales={sales} setSales={setSales} receipts={receipts} setReceipts={setReceipts} dispatches={dispatches} setDispatches={setDispatches} suppliers={suppliers} setSuppliers={setSuppliers} heldSales={heldSales} setHeldSales={setHeldSales} quotes={quotes} setQuotes={setQuotes} users={users} setUsers={setUsers} currentUser={currentUser} setCurrentUserId={setCurrentUserId} readNotifications={readNotifications} setReadNotifications={setReadNotifications} initialSection={settingsSection} onSectionChange={setSettingsSection} notify={notify} />}
         </main>
       </div>
@@ -408,6 +712,83 @@ function App() {
 
       {toast && <div className={`toast ${toast.tone}`}><Check size={18} /><span>{toast.message}</span></div>}
     </div>
+  )
+}
+
+function LoginScreen({ businessName, branchName, setupRequired, initialUsername, onLogin, onSetup, onCompletePasswordChange }) {
+  const [username, setUsername] = useState(setupRequired ? initialUsername : '')
+  const [password, setPassword] = useState('')
+  const [passwordConfirm, setPasswordConfirm] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [pendingUser, setPendingUser] = useState(null)
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const isPasswordSetup = setupRequired || Boolean(pendingUser)
+  const heading = setupRequired ? 'Configura el acceso inicial' : pendingUser ? 'Crea tu contraseña personal' : 'Bienvenido nuevamente'
+  const detail = setupRequired
+    ? 'Define la contraseña del administrador para proteger el ERP.'
+    : pendingUser
+      ? `${pendingUser.name}, reemplaza la contraseña temporal antes de continuar.`
+      : 'Ingresa con el correo y la contraseña asignados a tu perfil.'
+
+  const submit = async (event) => {
+    event.preventDefault()
+    setError('')
+    if (isPasswordSetup) {
+      const validationError = passwordValidationMessage(password)
+      if (validationError) {
+        setError(validationError)
+        return
+      }
+      if (password !== passwordConfirm) {
+        setError('Las contraseñas no coinciden')
+        return
+      }
+    }
+    setSubmitting(true)
+    try {
+      const result = pendingUser
+        ? await onCompletePasswordChange(pendingUser.userId, password)
+        : setupRequired
+          ? await onSetup(username, password)
+          : await onLogin(username, password)
+      if (result?.error) {
+        setError(result.error)
+      } else if (result?.requiresPasswordChange) {
+        setPendingUser({ userId: result.userId, name: result.name })
+        setPassword('')
+        setPasswordConfirm('')
+        setShowPassword(false)
+      }
+    } catch {
+      setError('No fue posible validar el acceso. Intenta nuevamente.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <main className="login-page">
+      <section className="login-brand-panel">
+        <div className="login-brand"><span><Hammer size={28} /></span><div><strong>{businessName}</strong><small>Sistema de gestión</small></div></div>
+        <div className="login-brand-copy"><span className="login-eyebrow">ERP ferretero</span><h1>Tu operación, inventario y ventas en un solo lugar.</h1><p>Accede con tu perfil para ver únicamente los módulos y acciones que tienes autorizados.</p></div>
+        <div className="login-security-note"><ShieldCheck size={20} /><span><strong>Acceso por perfil</strong><small>Administrador, vendedor o bodeguero</small></span></div>
+      </section>
+      <section className="login-access-panel">
+        <form className="login-card" onSubmit={submit}>
+          <div className="login-card-icon"><KeyRound size={22} /></div>
+          <div className="login-card-heading"><span>{branchName}</span><h2>{heading}</h2><p>{detail}</p></div>
+          {!pendingUser && <label>Usuario<input type="text" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required autoFocus placeholder="nombre.usuario" /></label>}
+          <label>{isPasswordSetup ? 'Nueva contraseña' : 'Contraseña'}<span className="login-password"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={isPasswordSetup ? 'new-password' : 'current-password'} required placeholder="••••••••" /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></span></label>
+          {isPasswordSetup && <label>Confirmar contraseña<input type={showPassword ? 'text' : 'password'} value={passwordConfirm} onChange={(event) => setPasswordConfirm(event.target.value)} autoComplete="new-password" required placeholder="Repite la contraseña" /><small>Usa 8 o más caracteres, con mayúscula, minúscula y número.</small></label>}
+          {error && <div className="login-error" role="alert"><AlertTriangle size={16} /><span>{error}</span></div>}
+          <button className="login-submit" disabled={submitting}>{submitting ? 'Validando acceso...' : setupRequired ? 'Configurar e ingresar' : pendingUser ? 'Guardar e ingresar' : 'Ingresar'}<ArrowRight size={18} /></button>
+          {!setupRequired && !pendingUser && <p className="login-help">Si olvidaste tu contraseña, solicita al administrador que restablezca tu acceso.</p>}
+        </form>
+        <footer><span>{businessName}</span><small>Acceso local · {branchName}</small></footer>
+      </section>
+    </main>
   )
 }
 
@@ -568,7 +949,7 @@ function Metric({ icon: Icon, label, value, detail, tone }) {
   )
 }
 
-function PointOfSale({ products, setProducts, customers, sales, setSales, heldSales, setHeldSales, setQuotes, notify, settings, setSettings, currentUser, can }) {
+function PointOfSale({ products, setProducts, customers, sales, setSales, heldSales, setHeldSales, quotes, setQuotes, notify, settings, setSettings, currentUser, can, initialQuoteId = null }) {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('Todos')
   const [cart, setCart] = useState([])
@@ -582,15 +963,10 @@ function PointOfSale({ products, setProducts, customers, sales, setSales, heldSa
   const paymentMethods = settings.sales.paymentMethods.length ? settings.sales.paymentMethods : defaultSettings.sales.paymentMethods
 
   useEffect(() => {
-    const onKey = (event) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault()
-        searchRef.current?.focus()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+    if (!initialQuoteId) return
+    const savedQuote = quotes.find((item) => item.id === initialQuoteId)
+    if (savedQuote) setQuote(savedQuote)
+  }, [initialQuoteId, quotes])
 
   useEffect(() => {
     if (!paymentMethods.includes(payment)) setPayment(paymentMethods[0])
@@ -1011,11 +1387,16 @@ function HeldSalesModal({ sales, hasActiveCart, canDelete, onResume, onDelete, o
   )
 }
 
-function Inventory({ products, setProducts, notify, settings, currentUser, can }) {
-  const [query, setQuery] = useState('')
+function Inventory({ products, setProducts, notify, settings, currentUser, can, initialQuery = '' }) {
+  const [query, setQuery] = useState(initialQuery)
   const [filter, setFilter] = useState('Todos')
   const [editing, setEditing] = useState(null)
   const [showProduct, setShowProduct] = useState(false)
+  useEffect(() => {
+    if (!initialQuery) return
+    setQuery(initialQuery)
+    setFilter('Todos')
+  }, [initialQuery])
   const configuredCategories = splitList(settings.inventory.categories)
   const configuredUnits = splitList(settings.inventory.units)
   const categories = ['Todos', ...new Set([...configuredCategories, ...products.map((product) => product.category)])]
@@ -1107,7 +1488,7 @@ function Inventory({ products, setProducts, notify, settings, currentUser, can }
   )
 }
 
-function Receipts({ products, setProducts, receipts, setReceipts, suppliers, notify, currentUser }) {
+function Receipts({ products, setProducts, receipts, setReceipts, suppliers, notify, currentUser, highlightId = null }) {
   const [showForm, setShowForm] = useState(false)
   const [lines, setLines] = useState([])
   const [productId, setProductId] = useState(String(products[0]?.id || ''))
@@ -1154,7 +1535,7 @@ function Receipts({ products, setProducts, receipts, setReceipts, suppliers, not
       <section className="data-panel">
         <div className="panel-heading table-title"><div><span className="eyebrow">Movimientos</span><h3>Últimos ingresos</h3></div><button className="secondary-button"><FileText size={16} />Exportar</button></div>
         <div className="table-scroll"><table><thead><tr><th>Ingreso</th><th>Fecha</th><th>Proveedor</th><th>Documento</th><th>Responsable</th><th>Unidades</th><th>Total costo</th><th>Estado</th></tr></thead>
-          <tbody>{receipts.map((receipt) => <tr key={receipt.id}><td><strong>{receipt.id}</strong></td><td>{receipt.date}</td><td>{receipt.supplier}</td><td>{receipt.document}</td><td>{receipt.responsible || 'Matías Dintrans'}</td><td>{receipt.units}</td><td><strong>{money.format(receipt.total)}</strong></td><td><span className="status-pill success"><Check size={13} />{receipt.status}</span></td></tr>)}</tbody>
+          <tbody>{receipts.map((receipt) => <tr key={receipt.id} className={receipt.id === highlightId ? 'search-highlight' : ''}><td><strong>{receipt.id}</strong></td><td>{receipt.date}</td><td>{receipt.supplier}</td><td>{receipt.document}</td><td>{receipt.responsible || 'Matías Dintrans'}</td><td>{receipt.units}</td><td><strong>{money.format(receipt.total)}</strong></td><td><span className="status-pill success"><Check size={13} />{receipt.status}</span></td></tr>)}</tbody>
         </table></div>
       </section>
       {showForm && (
@@ -1180,12 +1561,36 @@ function Receipts({ products, setProducts, receipts, setReceipts, suppliers, not
   )
 }
 
-function Dispatches({ products, setProducts, customers, dispatches, setDispatches, notify, settings, currentUser }) {
+function Dispatches({ products, setProducts, customers, dispatches, setDispatches, notify, settings, currentUser, highlightId = null }) {
   const [showForm, setShowForm] = useState(false)
   const [lines, setLines] = useState([])
   const [productId, setProductId] = useState(String(products[0]?.id || ''))
   const [qty, setQty] = useState(1)
+  const [customerId, setCustomerId] = useState('')
+  const [delivery, setDelivery] = useState({ customer: '', contact: '', address: '' })
   const availableProducts = settings.inventory.preventNegative ? products.filter((product) => product.stock > 0) : products
+
+  const closeDispatchForm = () => {
+    setShowForm(false)
+    setLines([])
+    setCustomerId('')
+    setDelivery({ customer: '', contact: '', address: '' })
+  }
+
+  const selectDispatchCustomer = (value) => {
+    setCustomerId(value)
+    if (!value) {
+      setDelivery({ customer: '', contact: '', address: '' })
+      return
+    }
+    const selected = customers.find((customer) => String(customer.id ?? customer.rut ?? customer.name) === value)
+    if (!selected) return
+    setDelivery({
+      customer: selected.name || '',
+      contact: [selected.contact, selected.phone].filter(Boolean).join(' · '),
+      address: [selected.address, selected.commune].filter(Boolean).join(', '),
+    })
+  }
 
   const addLine = () => {
     const product = products.find((item) => item.id === Number(productId))
@@ -1201,14 +1606,13 @@ function Dispatches({ products, setProducts, customers, dispatches, setDispatche
     if (!lines.length) return
     const data = new FormData(event.currentTarget)
     const sequence = dispatches.reduce((highest, dispatch) => Math.max(highest, Number(dispatch.id.replace(/\D/g, '')) || 0), 0) + 1
-    const dispatch = { id: `DES-${String(sequence).padStart(3, '0')}`, date: 'Hoy, ' + new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }), customer: data.get('customer'), order: data.get('order'), units: lines.reduce((sum, line) => sum + line.qty, 0), status: 'Preparando', responsible: currentUser.name, userId: currentUser.id }
+    const dispatch = { id: `DES-${String(sequence).padStart(3, '0')}`, date: 'Hoy, ' + new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }), customer: delivery.customer.trim(), contact: delivery.contact.trim(), address: delivery.address.trim(), order: data.get('order').trim(), units: lines.reduce((sum, line) => sum + line.qty, 0), status: 'Preparando', responsible: currentUser.name, userId: currentUser.id }
     setProducts((current) => current.map((product) => {
       const outgoing = lines.filter((line) => line.id === product.id).reduce((sum, line) => sum + line.qty, 0)
       return outgoing ? { ...product, stock: product.stock - outgoing } : product
     }))
     setDispatches((current) => [dispatch, ...current])
-    setLines([])
-    setShowForm(false)
+    closeDispatchForm()
     notify(`${dispatch.id} creado y stock reservado`)
   }
 
@@ -1226,18 +1630,24 @@ function Dispatches({ products, setProducts, customers, dispatches, setDispatche
           const Icon = [ClipboardCheck, Truck, PackageCheck][index]
           const items = dispatches.filter((item) => item.status === status)
           return <div className="dispatch-column" key={status}><div className="column-title"><span><Icon size={18} /></span><strong>{status}</strong><em>{items.length}</em></div>
-            <div className="dispatch-items">{items.length ? items.map((item) => <div className="dispatch-card" key={item.id}><div><strong>{item.id}</strong><span className={`status-dot s${index}`} /></div><h4>{item.customer}</h4><p>{item.order}</p><div className="dispatch-meta"><span><Box size={14} />{item.units} unidades</span><span><Clock3 size={14} />{item.date}</span></div><span className="dispatch-owner"><UserRound size={13} />{item.responsible || 'Matías Dintrans'}</span>{index < 2 && <button onClick={() => advance(item.id)}>{index === 0 ? 'Marcar despachado' : 'Confirmar entrega'}<ArrowRight size={15} /></button>}</div>) : <div className="column-empty">Sin pedidos en esta etapa</div>}</div>
+            <div className="dispatch-items">{items.length ? items.map((item) => <div className={`dispatch-card ${item.id === highlightId ? 'search-highlight' : ''}`} key={item.id}><div><strong>{item.id}</strong><span className={`status-dot s${index}`} /></div><h4>{item.customer}</h4><p>{item.order}</p>{(item.address || item.contact) && <div className="dispatch-delivery">{item.address && <span><MapPin size={13} />{item.address}</span>}{item.contact && <span><Phone size={13} />{item.contact}</span>}</div>}<div className="dispatch-meta"><span><Box size={14} />{item.units} unidades</span><span><Clock3 size={14} />{item.date}</span></div><span className="dispatch-owner"><UserRound size={13} />{item.responsible || 'Matías Dintrans'}</span>{index < 2 && <button onClick={() => advance(item.id)}>{index === 0 ? 'Marcar despachado' : 'Confirmar entrega'}<ArrowRight size={15} /></button>}</div>) : <div className="column-empty">Sin pedidos en esta etapa</div>}</div>
           </div>
         })}
       </section>
       {showForm && (
-        <Modal title="Nuevo despacho" subtitle="Reserva stock y prepara la salida" onClose={() => setShowForm(false)} wide>
+        <Modal title="Nuevo despacho" subtitle="Reserva stock y prepara la salida" onClose={closeDispatchForm} wide>
           <form onSubmit={saveDispatch} className="receipt-form">
-            <div className="form-grid"><label>Cliente<select name="customer"><option>Público general</option>{customers.filter((item) => item.active !== false).map((item) => <option key={item.id || item.rut}>{item.name}</option>)}</select></label><label>Pedido / referencia<input name="order" required placeholder="Pedido #1" /></label></div>
+            <div className="form-grid dispatch-customer-form">
+              <label className="span-2">Cliente registrado<select value={customerId} onChange={(event) => selectDispatchCustomer(event.target.value)}><option value="">Ingresar datos manualmente</option>{customers.filter((item) => item.active !== false).map((item) => { const value = String(item.id ?? item.rut ?? item.name); return <option value={value} key={value}>{item.name}{item.rut ? ` · ${item.rut}` : ''}</option> })}</select><small>Selecciona un cliente para completar automáticamente sus datos.</small></label>
+              <label>Nombre del cliente<input name="customer" value={delivery.customer} onChange={(event) => setDelivery((current) => ({ ...current, customer: event.target.value }))} required placeholder="Nombre o razón social" /></label>
+              <label>Contacto<input name="contact" value={delivery.contact} onChange={(event) => setDelivery((current) => ({ ...current, contact: event.target.value }))} required placeholder="Persona o teléfono de contacto" /></label>
+              <label className="span-2">Dirección de entrega<input name="address" value={delivery.address} onChange={(event) => setDelivery((current) => ({ ...current, address: event.target.value }))} required placeholder="Calle, número, comuna y referencia" /></label>
+              <label className="span-2">Pedido / referencia<input name="order" required placeholder="Pedido #1 u orden de compra" /></label>
+            </div>
             <div className="line-builder dispatch-line"><label>Producto<select value={productId} onChange={(event) => setProductId(event.target.value)}>{availableProducts.map((product) => <option value={product.id} key={product.id}>{product.sku} · {product.name} ({product.stock} disp.)</option>)}</select></label><label>Cantidad<input value={qty} onChange={(event) => setQty(event.target.value)} type="number" min="1" /></label><button type="button" className="secondary-button" onClick={addLine}><Plus size={17} />Agregar</button></div>
             <LineTable lines={lines} setLines={setLines} />
             <div className="document-total"><span>Total de unidades</span><strong>{lines.reduce((sum, line) => sum + line.qty, 0)}</strong></div>
-            <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setShowForm(false)}>Cancelar</button><button className="primary-button" disabled={!lines.length}><Truck size={17} />Crear despacho</button></div>
+            <div className="modal-actions"><button type="button" className="secondary-button" onClick={closeDispatchForm}>Cancelar</button><button className="primary-button" disabled={!lines.length}><Truck size={17} />Crear despacho</button></div>
           </form>
         </Modal>
       )}
@@ -1404,15 +1814,22 @@ function Suppliers({ suppliers, setSuppliers, notify }) {
   )
 }
 
-function Reports({ products, sales, notify, settings, can }) {
+function Reports({ products, sales, notify, settings, can, initialQuery = '' }) {
   const today = localDateKey()
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(initialQuery)
   const [period, setPeriod] = useState('Todos')
   const [day, setDay] = useState(today)
   const [month, setMonth] = useState(today.slice(0, 7))
   const [year, setYear] = useState(today.slice(0, 4))
   const [paymentFilter, setPaymentFilter] = useState('Todos')
   const [exporting, setExporting] = useState(false)
+
+  useEffect(() => {
+    if (!initialQuery) return
+    setQuery(initialQuery)
+    setPeriod('Todos')
+    setPaymentFilter('Todos')
+  }, [initialQuery])
 
   const normalizedSales = useMemo(() => {
     return sales.map((sale) => ({
@@ -1596,6 +2013,7 @@ function Configuration({ settings, setSettings, products, setProducts, customers
   const [draft, setDraft] = useState(settings)
   const [confirmReset, setConfirmReset] = useState(false)
   const [userDraft, setUserDraft] = useState(null)
+  const [userSaving, setUserSaving] = useState(false)
   const importRef = useRef(null)
 
   useEffect(() => setDraft(settings), [settings])
@@ -1657,10 +2075,13 @@ function Configuration({ settings, setSettings, products, setProducts, customers
   }
 
   const openUserForm = (user = null) => {
-    setUserDraft(user ? { ...user, permissions: [...user.permissions] } : {
+    setUserDraft(user ? { ...user, password: '', passwordConfirm: '', permissions: [...user.permissions] } : {
       id: null,
+      username: '',
       name: '',
       email: '',
+      password: '',
+      passwordConfirm: '',
       role: 'Vendedor',
       active: true,
       permissions: [...rolePermissions.Vendedor],
@@ -1676,8 +2097,18 @@ function Configuration({ settings, setSettings, products, setProducts, customers
     }))
   }
 
-  const saveUser = (event) => {
+  const saveUser = async (event) => {
     event.preventDefault()
+    const normalizedDraftUsername = normalizeUsername(userDraft.username)
+    if (!/^[a-z0-9._-]{3,30}$/.test(normalizedDraftUsername)) {
+      notify('El usuario debe tener entre 3 y 30 caracteres: letras, números, punto, guion o guion bajo', 'warning')
+      return
+    }
+    const usernameExists = users.some((user) => user.id !== userDraft.id && getUsername(user) === normalizedDraftUsername)
+    if (usernameExists) {
+      notify('Ya existe una cuenta con ese nombre de usuario', 'warning')
+      return
+    }
     const emailExists = users.some((user) => user.id !== userDraft.id && user.email.toLowerCase() === userDraft.email.trim().toLowerCase())
     if (emailExists) {
       notify('Ya existe un usuario con ese correo', 'warning')
@@ -1687,13 +2118,43 @@ function Configuration({ settings, setSettings, products, setProducts, customers
       notify('El usuario activo debe conservar acceso a usuarios y configuración', 'warning')
       return
     }
+    const needsPassword = !userDraft.id || !userDraft.passwordHash
+    if (needsPassword && !userDraft.password) {
+      notify('Debes definir una contraseña inicial', 'warning')
+      return
+    }
+    if (userDraft.password) {
+      const validationError = passwordValidationMessage(userDraft.password)
+      if (validationError) {
+        notify(validationError, 'warning')
+        return
+      }
+      if (userDraft.password !== userDraft.passwordConfirm) {
+        notify('Las contraseñas no coinciden', 'warning')
+        return
+      }
+    }
+    setUserSaving(true)
+    let credential = {}
+    try {
+      if (userDraft.password) credential = await createPasswordCredential(userDraft.password)
+    } catch {
+      notify('No fue posible proteger la contraseña en este navegador', 'warning')
+      setUserSaving(false)
+      return
+    }
+    const { password, passwordConfirm, showPassword, ...userData } = userDraft
     const savedUser = {
-      ...userDraft,
+      ...userData,
+      ...credential,
       id: userDraft.id || Math.max(0, ...users.map((user) => Number(user.id) || 0)) + 1,
+      username: normalizedDraftUsername,
       name: userDraft.name.trim(),
       email: userDraft.email.trim().toLowerCase(),
+      mustChangePassword: userDraft.password ? userDraft.id !== currentUser.id : Boolean(userDraft.mustChangePassword),
     }
     setUsers((current) => userDraft.id ? current.map((user) => user.id === userDraft.id ? savedUser : user) : [...current, savedUser])
+    setUserSaving(false)
     setUserDraft(null)
     notify(userDraft.id ? 'Usuario actualizado correctamente' : 'Usuario creado correctamente')
   }
@@ -1735,7 +2196,7 @@ function Configuration({ settings, setSettings, products, setProducts, customers
       setHeldSales(Array.isArray(data.heldSales) ? data.heldSales : [])
       setQuotes(restoredQuotes)
       const restoredUsers = Array.isArray(data.users) && data.users.length ? data.users : defaultUsers
-      setUsers(restoredUsers)
+      setUsers(normalizeUsers(restoredUsers))
       setCurrentUserId(restoredUsers.some((user) => user.id === data.currentUserId && user.active) ? data.currentUserId : restoredUsers.find((user) => user.active)?.id || 1)
       setReadNotifications(data.readNotifications && typeof data.readNotifications === 'object' ? data.readNotifications : {})
       localStorage.setItem('mf-quote-sequence', String(Math.max(0, ...restoredQuotes.map((quote) => Number(quote.sequence) || 0))))
@@ -1756,8 +2217,9 @@ function Configuration({ settings, setSettings, products, setProducts, customers
     setSuppliers(defaultSuppliers)
     setHeldSales(defaultHeldSales)
     setQuotes([])
-    setUsers(defaultUsers)
-    setCurrentUserId(1)
+    const preservedAdmin = { ...currentUser, role: 'Administrador', active: true, permissions: [...rolePermissions.Administrador], mustChangePassword: false }
+    setUsers([preservedAdmin])
+    setCurrentUserId(preservedAdmin.id)
     setReadNotifications({})
     localStorage.removeItem('mf-quote-sequence')
     localStorage.removeItem('mf-held-sale-sequence')
@@ -1859,7 +2321,7 @@ function Configuration({ settings, setSettings, products, setProducts, customers
             <div className="users-list">
               <div className="users-list-head"><span>Usuario</span><span>Rol</span><span>Estado</span><span /></div>
               {users.map((user) => <div className="user-row" key={user.id}>
-                <span className="user-identity"><i className={`avatar ${user.active ? '' : 'inactive'}`}>{userInitials(user.name)}</i><span><strong>{user.name}</strong><small>{user.email}{user.id === currentUser.id ? ' · Usuario activo' : ''}</small></span></span>
+                <span className="user-identity"><i className={`avatar ${user.active ? '' : 'inactive'}`}>{userInitials(user.name)}</i><span><strong>{user.name}</strong><small>@{getUsername(user)} · {user.email}{user.id === currentUser.id ? ' · Usuario activo' : ''}{!user.passwordHash ? ' · Sin contraseña' : user.mustChangePassword ? ' · Cambio pendiente' : ''}</small></span></span>
                 <span className="role-badge">{user.role}</span>
                 <span className={`user-status ${user.active ? 'active' : ''}`}><i />{user.active ? 'Activo' : 'Bloqueado'}</span>
                 <button type="button" className="row-action" onClick={() => openUserForm(user)}><Pencil size={14} />Editar</button>
@@ -1894,8 +2356,11 @@ function Configuration({ settings, setSettings, products, setProducts, customers
       {userDraft && <Modal title={userDraft.id ? 'Editar usuario' : 'Nuevo usuario'} subtitle="Perfil de acceso al sistema" onClose={() => setUserDraft(null)} wide>
         <form className="user-form" onSubmit={saveUser}>
           <div className="form-grid">
+            <label>Nombre de usuario<input value={userDraft.username} onChange={(event) => setUserDraft((current) => ({ ...current, username: event.target.value }))} required autoComplete="off" placeholder="nombre.usuario" /><small>Se utilizará para iniciar sesión</small></label>
             <label>Nombre completo<input value={userDraft.name} onChange={(event) => setUserDraft((current) => ({ ...current, name: event.target.value }))} required /></label>
             <label>Correo electrónico<input type="email" value={userDraft.email} onChange={(event) => setUserDraft((current) => ({ ...current, email: event.target.value }))} required /></label>
+            <label>{userDraft.id ? 'Nueva contraseña' : 'Contraseña inicial'}<span className="password-input"><input type={userDraft.showPassword ? 'text' : 'password'} value={userDraft.password} onChange={(event) => setUserDraft((current) => ({ ...current, password: event.target.value }))} required={!userDraft.id || !userDraft.passwordHash} autoComplete="new-password" placeholder={userDraft.id ? 'Dejar en blanco para conservar' : 'Mínimo 8 caracteres'} /><button type="button" onClick={() => setUserDraft((current) => ({ ...current, showPassword: !current.showPassword }))} aria-label={userDraft.showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{userDraft.showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></span><small>Mayúscula, minúscula y número</small></label>
+            <label>Confirmar contraseña<input type={userDraft.showPassword ? 'text' : 'password'} value={userDraft.passwordConfirm} onChange={(event) => setUserDraft((current) => ({ ...current, passwordConfirm: event.target.value }))} required={Boolean(userDraft.password)} autoComplete="new-password" placeholder="Repite la contraseña" /></label>
             <label>Rol<select value={userDraft.role} onChange={(event) => updateUserRole(event.target.value)}>{Object.keys(rolePermissions).map((role) => <option key={role}>{role}</option>)}</select></label>
             <label className="user-active-field"><span>Estado de acceso</span><span className="inline-switch"><input type="checkbox" checked={userDraft.active} disabled={userDraft.id === currentUser.id} onChange={(event) => setUserDraft((current) => ({ ...current, active: event.target.checked }))} /><i /><strong>{userDraft.active ? 'Activo' : 'Bloqueado'}</strong></span></label>
           </div>
@@ -1903,7 +2368,7 @@ function Configuration({ settings, setSettings, products, setProducts, customers
             <PermissionGroup title="Acceso a módulos" permissions={modulePermissions} userDraft={userDraft} currentUser={currentUser} togglePermission={toggleUserPermission} />
             <PermissionGroup title="Acciones autorizadas" permissions={actionPermissions} userDraft={userDraft} currentUser={currentUser} togglePermission={toggleUserPermission} />
           </div>
-          <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setUserDraft(null)}>Cancelar</button><button className="primary-button" type="submit"><Check size={17} />Guardar usuario</button></div>
+          <div className="modal-actions"><button type="button" className="secondary-button" disabled={userSaving} onClick={() => setUserDraft(null)}>Cancelar</button><button className="primary-button" type="submit" disabled={userSaving}><Check size={17} />{userSaving ? 'Protegiendo acceso...' : 'Guardar usuario'}</button></div>
         </form>
       </Modal>}
     </div>
