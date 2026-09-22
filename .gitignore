@@ -1,0 +1,11 @@
+node_modules/
+dist/
+artifacts/
+.vite/
+
+*.log
+.DS_Store
+
+.env
+.env.*
+!.env.example
