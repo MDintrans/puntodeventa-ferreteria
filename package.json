@@ -12,7 +12,9 @@
     "db:validate": "node scripts/validate-neon-schema.mjs",
     "db:migrate": "node scripts/neon-db.mjs migrate",
     "db:verify": "node scripts/neon-db.mjs verify",
-    "api:validate": "node scripts/validate-neon-api.mjs"
+    "api:validate": "node scripts/validate-neon-api.mjs",
+    "transactions:validate": "node scripts/validate-transactions.mjs",
+    "ui:validate": "node scripts/visual-check.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

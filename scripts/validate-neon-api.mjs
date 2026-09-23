@@ -40,7 +40,7 @@ try {
     insert into public.erp_state_snapshots (organization_id, state, updated_by)
     values ($1, $2::jsonb, $3)
     returning version, state
-  `, [organizationId, JSON.stringify({ products: [], settings: { business: { name: 'Validación' } } }), user.rows[0].id])
+  `, [organizationId, JSON.stringify({ customers: [], settings: { business: { name: 'Validación' } } }), user.rows[0].id])
   await client.query(`
     insert into public.user_sessions (user_id, organization_id, token_hash, expires_at)
     values ($1, $2, $3, now() + interval '1 hour')
@@ -48,7 +48,7 @@ try {
 
   const access = await client.query(`
     select member.role, member.permissions, snapshot.version,
-      jsonb_array_length(snapshot.state->'products') as product_count
+      jsonb_array_length(snapshot.state->'customers') as customer_count
     from public.organization_members member
     join public.erp_state_snapshots snapshot on snapshot.organization_id = member.organization_id
     where member.organization_id = $1 and member.user_id = $2
@@ -56,13 +56,12 @@ try {
   assert.equal(access.rows[0].role, 'admin')
   assert.ok(access.rows[0].permissions.includes('manageUsers'))
   assert.equal(Number(access.rows[0].version), 1)
-  assert.equal(access.rows[0].product_count, 0)
+  assert.equal(access.rows[0].customer_count, 0)
   assert.equal(await bcrypt.compare('Validacion123', passwordHash), true)
 
-  console.log('OK bootstrap, contraseña bcrypt, sesión y estado sincronizado')
+  console.log('OK bootstrap, contraseña bcrypt, sesión y estado auxiliar sincronizado')
   console.log('OK validación ejecutada dentro de una transacción reversible')
 } finally {
   await client.query('rollback').catch(() => {})
   await client.end()
 }
-

@@ -21,9 +21,10 @@ servidor o API. Nunca debe renombrarse como `VITE_DATABASE_URL`.
 - Folios atómicos por sucursal y tipo de documento.
 - Configuración del negocio y notificaciones leídas.
 
-En total se crean 34 tablas, 6 funciones transaccionales y 2 vistas. La tabla
-`erp_state_snapshots` mantiene sincronizado el estado operativo utilizado por la
-interfaz mientras los usuarios, sesiones y permisos permanecen normalizados.
+En total se crean 34 tablas, 6 funciones transaccionales y 2 vistas. Ventas,
+productos, existencias, ingresos y despachos se guardan en sus tablas
+normalizadas. `erp_state_snapshots` conserva únicamente configuración y
+catálogos auxiliares de la interfaz; no es la fuente de verdad del stock.
 Los montos se almacenan como pesos chilenos enteros (`bigint`) y las cantidades
 usan tres decimales para admitir unidades como metros o kilos.
 
@@ -51,6 +52,8 @@ npm install
 npm run db:validate
 npm run db:migrate
 npm run api:validate
+npm run transactions:validate
+npm run ui:validate
 ```
 
 `db:validate` levanta PostgreSQL en memoria y comprueba la sintaxis, relaciones,
@@ -58,8 +61,17 @@ creación inicial, protección del último administrador y ajuste de inventario 
 necesitar credenciales de Neon.
 
 `api:validate` comprueba contra Neon el bootstrap, bcrypt, las sesiones y el
-estado sincronizado dentro de una transacción que siempre se revierte, por lo
-que no deja datos de prueba.
+estado auxiliar sincronizado dentro de una transacción que siempre se revierte,
+por lo que no deja datos de prueba.
+
+`transactions:validate` crea una organización temporal, hace competir dos
+cajas por la última unidad, prueba reintentos de venta, ingreso y despacho, y
+elimina los datos temporales al finalizar.
+
+`ui:validate` abre Chrome en modo headless, inicia sesión en una organización
+temporal, crea una segunda caja y vende desde dos terminales (escritorio y
+móvil). También comprueba que el stock actualizado por una terminal aparezca en
+la otra. Los datos temporales se eliminan al finalizar.
 
 El ejecutor registra cada archivo en `public.schema_migrations`, guarda su hash
 y ejecuta cada migración dentro de una transacción. Es seguro volver a ejecutar
@@ -98,11 +110,27 @@ Las contraseñas se guardan únicamente como hash bcrypt en
 API privada del ERP; el hash nunca se envía al navegador. Las sesiones usan una
 cookie `HttpOnly` y se registran en `user_sessions`.
 
-## Stock inicial
+## Operaciones transaccionales
 
-No se debe modificar `branch_inventory` manualmente. La API debe ejecutar
-`adjust_inventory`, que bloquea la fila, valida el rol y registra el movimiento
-en la misma transacción:
+El navegador nunca modifica existencias directamente. La API bloquea las filas
+de `branch_inventory`, valida el stock disponible y guarda documento, detalle,
+pago y movimiento de stock dentro de una sola transacción PostgreSQL.
+
+- `POST /api/sales`: crea la venta, la asocia a una caja, descuenta stock y
+  registra el pago.
+- `POST /api/receipts`: crea el ingreso, actualiza costo y suma existencias.
+- `POST /api/dispatches`: crea el despacho y reserva existencias.
+- `PATCH /api/dispatches/:id/advance`: materializa la salida o confirma la
+  entrega sin avanzar dos etapas por un doble clic.
+- `POST`/`PATCH /api/products`: crea o ajusta productos con bloqueo de stock.
+
+Ventas, ingresos y despachos incluyen una clave de idempotencia: repetir la
+misma solicitud por un corte de red devuelve el documento original sin volver
+a mover inventario. Las líneas se bloquean en orden estable, de modo que dos
+cajas pueden operar simultáneamente sin sobreventa.
+
+Para ajustes administrativos también está disponible `adjust_inventory`, que
+bloquea la fila, valida el rol y registra el movimiento:
 
 ```sql
 select * from public.adjust_inventory(
@@ -125,10 +153,20 @@ cambios a `PATCH /api/state`. Los cambios se agrupan durante unos milisegundos y
 la cabecera del ERP muestra si Neon está sincronizado, guardando o desconectado.
 
 El servidor Node usa `DATABASE_URL`; el navegador sólo consume endpoints del
-mismo origen bajo `/api`. Productos, ventas, ingresos, despachos, proveedores,
-clientes, cotizaciones, ventas en espera, configuración y notificaciones se
+mismo origen bajo `/api`. Productos, ventas, ingresos y despachos se refrescan
+desde sus tablas cada 15 segundos y al volver a enfocar la ventana. Clientes,
+proveedores, cotizaciones, ventas en espera, configuración y notificaciones se
 conservan en `erp_state_snapshots`. Usuarios, membresías, sesiones y auditoría
 usan sus tablas relacionales dedicadas.
+
+## Varias cajas
+
+Cada sucursal puede tener varias filas en `cash_registers`. Un administrador
+puede agregar otra desde **Configuración > Ventas y caja** y cada navegador
+elige su caja en el punto de venta. Esa selección queda guardada sólo para la
+terminal/pestaña actual, mientras todas las cajas comparten el stock confirmado
+por Neon. Cada venta conserva `cash_register_id` para reportes y conciliación
+posterior.
 
 ## Primer inicio
 

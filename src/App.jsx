@@ -231,6 +231,8 @@ const apiRequest = async (path, options = {}) => {
   }
 }
 
+const createOperationKey = () => globalThis.crypto?.randomUUID?.() || `op-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
 function App() {
   const [activeView, setActiveView] = useState('dashboard')
   const [products, setProducts] = useState(defaultProducts)
@@ -243,6 +245,8 @@ function App() {
   const [quotes, setQuotes] = useState([])
   const [settings, setSettings] = useState(defaultSettings)
   const [users, setUsers] = useState(defaultUsers)
+  const [cashRegisters, setCashRegisters] = useState([])
+  const [activeRegisterId, setActiveRegisterId] = useState('')
   const [currentUserId, setCurrentUserId] = useState(1)
   const [sessionUserId, setSessionUserId] = useState(null)
   const [readNotifications, setReadNotifications] = useState({})
@@ -268,6 +272,24 @@ function App() {
   const initialAdminUsername = setupRequired ? 'matias' : ''
   const can = (permission) => userCan(currentUser, permission)
 
+  const applyOperationalState = (payload) => {
+    if (Array.isArray(payload.products)) setProducts(payload.products)
+    if (Array.isArray(payload.sales)) setSales(payload.sales)
+    if (Array.isArray(payload.receipts)) setReceipts(payload.receipts)
+    if (Array.isArray(payload.dispatches)) setDispatches(payload.dispatches)
+    const nextRegisters = Array.isArray(payload.cashRegisters) ? payload.cashRegisters : []
+    setCashRegisters(nextRegisters)
+    setActiveRegisterId((current) => {
+      const savedRegisterId = window.sessionStorage.getItem('mf-active-register')
+      const selected = nextRegisters.find((register) => register.active && register.id === current)
+        || nextRegisters.find((register) => register.active && register.id === savedRegisterId)
+        || nextRegisters.find((register) => register.active)
+      if (selected) window.sessionStorage.setItem('mf-active-register', selected.id)
+      else window.sessionStorage.removeItem('mf-active-register')
+      return selected?.id || ''
+    })
+  }
+
   useEffect(() => {
     let active = true
     setAuthStatus((current) => ({ ...current, loading: true, error: '' }))
@@ -284,11 +306,7 @@ function App() {
 
   const synchronizedState = {
     settings,
-    products,
     customers,
-    sales,
-    receipts,
-    dispatches,
     suppliers,
     heldSales,
     quotes,
@@ -316,16 +334,13 @@ function App() {
       readNotifications: remote.readNotifications && typeof remote.readNotifications === 'object' ? remote.readNotifications : {},
     }
     setSettings(nextState.settings)
-    setProducts(nextState.products)
     setCustomers(nextState.customers)
-    setSales(nextState.sales)
-    setReceipts(nextState.receipts)
-    setDispatches(nextState.dispatches)
     setSuppliers(nextState.suppliers)
     setHeldSales(nextState.heldSales)
     setQuotes(nextState.quotes)
     setReadNotifications(nextState.readNotifications)
     setUsers(normalizeUsers(payload.users))
+    applyOperationalState({ ...nextState, cashRegisters: payload.cashRegisters })
     setCurrentUserId(payload.user.id)
     setSessionUserId(payload.user.id)
     lastSyncedStateRef.current = Object.fromEntries(Object.entries(nextState).map(([key, value]) => [key, JSON.stringify(value)]))
@@ -361,7 +376,23 @@ function App() {
       setSyncStatus('synced')
     }, 550)
     return () => window.clearTimeout(timer)
-  }, [settings, products, customers, sales, receipts, dispatches, suppliers, heldSales, quotes, readNotifications, syncReady, authenticatedUser?.id, syncRetry])
+  }, [settings, customers, suppliers, heldSales, quotes, readNotifications, syncReady, authenticatedUser?.id, syncRetry])
+
+  useEffect(() => {
+    if (!syncReady || !authenticatedUser) return
+    let active = true
+    const refreshOperations = async () => {
+      const result = await apiRequest('/api/operations')
+      if (active && !result.error) applyOperationalState(result)
+    }
+    const interval = window.setInterval(refreshOperations, 15000)
+    window.addEventListener('focus', refreshOperations)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+      window.removeEventListener('focus', refreshOperations)
+    }
+  }, [syncReady, authenticatedUser?.id])
 
   useEffect(() => {
     if (!authenticatedUser) return
@@ -466,6 +497,95 @@ function App() {
     })
     if (result.error) return result
     setUsers(normalizeUsers(result.users))
+    return { success: true }
+  }
+
+  const refreshRemoteOperations = async () => {
+    const result = await apiRequest('/api/operations')
+    if (!result.error) applyOperationalState(result)
+    return result
+  }
+
+  const selectCashRegister = (registerId) => {
+    setActiveRegisterId(registerId)
+    window.sessionStorage.setItem('mf-active-register', registerId)
+  }
+
+  const saveRemoteProduct = async (product) => {
+    const isExisting = typeof product.id === 'string' && product.id.includes('-')
+    const result = await apiRequest(isExisting ? `/api/products/${product.id}` : '/api/products', {
+      method: isExisting ? 'PATCH' : 'POST',
+      body: JSON.stringify(product),
+    })
+    if (result.error) {
+      if (result.status === 409) await refreshRemoteOperations()
+      return result
+    }
+    setProducts(result.products)
+    return { success: true }
+  }
+
+  const importRemoteProducts = async (nextProducts) => {
+    if (!nextProducts.length) return { success: true }
+    const result = await apiRequest('/api/products/import', { method: 'POST', body: JSON.stringify({ products: nextProducts }) })
+    if (result.error) {
+      if (result.status === 409) await refreshRemoteOperations()
+      return result
+    }
+    setProducts(result.products)
+    return { success: true }
+  }
+
+  const completeRemoteSale = async (sale) => {
+    const result = await apiRequest('/api/sales', { method: 'POST', body: JSON.stringify(sale) })
+    if (result.error) {
+      if (result.status === 409) await refreshRemoteOperations()
+      return result
+    }
+    setProducts(result.products)
+    setSales(result.sales)
+    return result
+  }
+
+  const receiveRemoteInventory = async (receipt) => {
+    const result = await apiRequest('/api/receipts', { method: 'POST', body: JSON.stringify(receipt) })
+    if (result.error) {
+      if (result.status === 409) await refreshRemoteOperations()
+      return result
+    }
+    setProducts(result.products)
+    setReceipts(result.receipts)
+    return result
+  }
+
+  const createRemoteDispatch = async (dispatch) => {
+    const result = await apiRequest('/api/dispatches', { method: 'POST', body: JSON.stringify(dispatch) })
+    if (result.error) {
+      if (result.status === 409) await refreshRemoteOperations()
+      return result
+    }
+    setProducts(result.products)
+    setDispatches(result.dispatches)
+    return result
+  }
+
+  const advanceRemoteDispatch = async (dispatchId, expectedStatus) => {
+    const result = await apiRequest(`/api/dispatches/${dispatchId}/advance`, { method: 'PATCH', body: JSON.stringify({ expectedStatus }) })
+    if (result.error) {
+      if (result.status === 409) await refreshRemoteOperations()
+      return result
+    }
+    setProducts(result.products)
+    setDispatches(result.dispatches)
+    return result
+  }
+
+  const createCashRegister = async (register) => {
+    const result = await apiRequest('/api/cash-registers', { method: 'POST', body: JSON.stringify(register) })
+    if (result.error) return result
+    setCashRegisters(result.cashRegisters)
+    const created = result.cashRegisters.filter((registerItem) => registerItem.active).at(-1)
+    if (created?.active) selectCashRegister(created.id)
     return { success: true }
   }
 
@@ -688,14 +808,14 @@ function App() {
 
         <main className={`page-content page-${activeView}`}>
           {activeView === 'dashboard' && <Dashboard products={products} sales={sales} receipts={receipts} dispatches={dispatches} navigate={navigate} settings={settings} currentUser={currentUser} />}
-          {activeView === 'pos' && <PointOfSale products={products} setProducts={setProducts} customers={customers} sales={sales} setSales={setSales} heldSales={heldSales} setHeldSales={setHeldSales} quotes={quotes} setQuotes={setQuotes} notify={notify} settings={settings} setSettings={setSettings} currentUser={currentUser} can={can} initialQuoteId={moduleSearch.view === 'pos' ? moduleSearch.id : null} />}
-          {activeView === 'inventory' && <Inventory products={products} setProducts={setProducts} notify={notify} settings={settings} currentUser={currentUser} can={can} initialQuery={moduleSearch.view === 'inventory' ? moduleSearch.query : ''} />}
-          {activeView === 'receipts' && <Receipts products={products} setProducts={setProducts} receipts={receipts} setReceipts={setReceipts} suppliers={suppliers} notify={notify} currentUser={currentUser} highlightId={moduleSearch.view === 'receipts' ? moduleSearch.id : null} />}
-          {activeView === 'dispatches' && <Dispatches products={products} setProducts={setProducts} customers={customers} dispatches={dispatches} setDispatches={setDispatches} notify={notify} settings={settings} currentUser={currentUser} highlightId={moduleSearch.view === 'dispatches' ? moduleSearch.id : null} />}
+          {activeView === 'pos' && <PointOfSale products={products} customers={customers} sales={sales} heldSales={heldSales} setHeldSales={setHeldSales} quotes={quotes} setQuotes={setQuotes} notify={notify} settings={settings} setSettings={setSettings} currentUser={currentUser} can={can} cashRegisters={cashRegisters} activeRegisterId={activeRegisterId} onRegisterChange={selectCashRegister} onCompleteSale={completeRemoteSale} initialQuoteId={moduleSearch.view === 'pos' ? moduleSearch.id : null} />}
+          {activeView === 'inventory' && <Inventory products={products} notify={notify} settings={settings} currentUser={currentUser} can={can} onSaveProduct={saveRemoteProduct} initialQuery={moduleSearch.view === 'inventory' ? moduleSearch.query : ''} />}
+          {activeView === 'receipts' && <Receipts products={products} receipts={receipts} suppliers={suppliers} notify={notify} onReceiveInventory={receiveRemoteInventory} highlightId={moduleSearch.view === 'receipts' ? moduleSearch.id : null} />}
+          {activeView === 'dispatches' && <Dispatches products={products} customers={customers} dispatches={dispatches} notify={notify} settings={settings} onCreateDispatch={createRemoteDispatch} onAdvanceDispatch={advanceRemoteDispatch} highlightId={moduleSearch.view === 'dispatches' ? moduleSearch.id : null} />}
           {activeView === 'customers' && <Customers customers={customers} sales={sales} />}
           {activeView === 'suppliers' && <Suppliers suppliers={suppliers} setSuppliers={setSuppliers} notify={notify} currentUser={currentUser} />}
           {activeView === 'reports' && <Reports products={products} sales={sales} notify={notify} settings={settings} can={can} initialQuery={moduleSearch.view === 'reports' ? moduleSearch.query : ''} />}
-          {activeView === 'settings' && <Configuration settings={settings} setSettings={setSettings} products={products} setProducts={setProducts} customers={customers} setCustomers={setCustomers} sales={sales} setSales={setSales} receipts={receipts} setReceipts={setReceipts} dispatches={dispatches} setDispatches={setDispatches} suppliers={suppliers} setSuppliers={setSuppliers} heldSales={heldSales} setHeldSales={setHeldSales} quotes={quotes} setQuotes={setQuotes} users={users} currentUser={currentUser} readNotifications={readNotifications} setReadNotifications={setReadNotifications} initialSection={settingsSection} onSectionChange={setSettingsSection} notify={notify} onSaveUser={saveRemoteUser} />}
+          {activeView === 'settings' && <Configuration settings={settings} setSettings={setSettings} products={products} setProducts={setProducts} customers={customers} setCustomers={setCustomers} sales={sales} setSales={setSales} receipts={receipts} setReceipts={setReceipts} dispatches={dispatches} setDispatches={setDispatches} suppliers={suppliers} setSuppliers={setSuppliers} heldSales={heldSales} setHeldSales={setHeldSales} quotes={quotes} setQuotes={setQuotes} users={users} currentUser={currentUser} readNotifications={readNotifications} setReadNotifications={setReadNotifications} cashRegisters={cashRegisters} initialSection={settingsSection} onSectionChange={setSettingsSection} notify={notify} onSaveUser={saveRemoteUser} onCreateCashRegister={createCashRegister} onImportProducts={importRemoteProducts} />}
         </main>
       </div>
 
@@ -959,7 +1079,7 @@ function Metric({ icon: Icon, label, value, detail, tone }) {
   )
 }
 
-function PointOfSale({ products, setProducts, customers, sales, setSales, heldSales, setHeldSales, quotes, setQuotes, notify, settings, setSettings, currentUser, can, initialQuoteId = null }) {
+function PointOfSale({ products, customers, heldSales, setHeldSales, quotes, setQuotes, notify, settings, setSettings, currentUser, can, cashRegisters, activeRegisterId, onRegisterChange, onCompleteSale, initialQuoteId = null }) {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('Todos')
   const [cart, setCart] = useState([])
@@ -968,7 +1088,9 @@ function PointOfSale({ products, setProducts, customers, sales, setSales, heldSa
   const [completedReceipt, setCompletedReceipt] = useState(null)
   const [quote, setQuote] = useState(null)
   const [showHeldSales, setShowHeldSales] = useState(false)
+  const [checkoutSaving, setCheckoutSaving] = useState(false)
   const searchRef = useRef(null)
+  const saleOperationRef = useRef(null)
   const categories = ['Todos', ...new Set(products.map((product) => product.category))]
   const paymentMethods = settings.sales.paymentMethods.length ? settings.sales.paymentMethods : defaultSettings.sales.paymentMethods
 
@@ -983,6 +1105,7 @@ function PointOfSale({ products, setProducts, customers, sales, setSales, heldSa
   }, [payment, paymentMethods])
 
   const visibleProducts = products.filter((product) => {
+    if (product.active === false) return false
     const matchesCategory = category === 'Todos' || product.category === category
     const value = `${product.name} ${product.sku} ${product.brand}`.toLowerCase()
     return matchesCategory && value.includes(query.toLowerCase())
@@ -1008,44 +1131,30 @@ function PointOfSale({ products, setProducts, customers, sales, setSales, heldSa
   const net = Math.round(subtotal / 1.19)
   const tax = subtotal - net
 
-  const completeSale = () => {
-    if (!cart.length) return
-    const now = new Date()
-    const highestSequence = sales.reduce((highest, current) => Math.max(highest, Number(current.id.replace(/\D/g, '')) || 0), 0)
-    const sequence = Math.max(Number(settings.documents.saleSequence) || 1, highestSequence + 1)
-    const sale = {
-      id: `V-${sequence}`,
-      createdAt: now.toISOString(),
-      date: localDateKey(now),
-      time: now.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }),
-      customer,
-      seller: currentUser.name,
-      userId: currentUser.id,
-      items: cart.reduce((sum, item) => sum + item.qty, 0),
-      payment,
-      total: subtotal,
-      status: 'Completada',
+  const completeSale = async () => {
+    if (!cart.length || checkoutSaving) return
+    if (!activeRegisterId) {
+      notify('Selecciona una caja activa antes de cobrar', 'warning')
+      return
     }
-    const receipt = {
-      ...sale,
-      folio: String(sequence).padStart(8, '0'),
-      date: now.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric' }),
-      payment,
-      register: settings.sales.register,
-      cashier: currentUser.name,
-      net,
-      tax,
-      lines: cart.map(({ id, sku, name, price, qty }) => ({ id, sku, name, price, qty })),
+    saleOperationRef.current ||= createOperationKey()
+    setCheckoutSaving(true)
+    const result = await onCompleteSale({
+      idempotencyKey: saleOperationRef.current,
+      cashRegisterId: activeRegisterId,
+      customerName: customer,
+      paymentMethod: payment,
+      lines: cart.map((item) => ({ productId: item.id, quantity: item.qty })),
+    })
+    setCheckoutSaving(false)
+    if (result.error) {
+      notify(result.error, 'warning')
+      return
     }
-    setProducts((current) => current.map((product) => {
-      const item = cart.find((cartItem) => cartItem.id === product.id)
-      return item ? { ...product, stock: product.stock - item.qty } : product
-    }))
-    setSales((current) => [sale, ...current])
-    setSettings((current) => ({ ...current, documents: { ...current.documents, saleSequence: sequence + 1 } }))
+    saleOperationRef.current = null
     setCart([])
     setCustomer('Público general')
-    setCompletedReceipt(receipt)
+    setCompletedReceipt(result.receipt)
   }
 
   const createQuote = () => {
@@ -1154,7 +1263,8 @@ function PointOfSale({ products, setProducts, customers, sales, setSales, heldSa
       </section>
 
       <aside className="cart-panel">
-        <div className="cart-heading"><div><span className="eyebrow">{settings.sales.register}</span><h2>Venta actual</h2></div><span className="cart-count">{cart.reduce((sum, item) => sum + item.qty, 0)}</span></div>
+        <div className="cart-heading"><div><span className="eyebrow">Caja de esta terminal</span><h2>Venta actual</h2></div><span className="cart-count">{cart.reduce((sum, item) => sum + item.qty, 0)}</span></div>
+        <label className="select-field register-field"><ShoppingCart size={17} /><select value={activeRegisterId} onChange={(event) => onRegisterChange(event.target.value)}><option value="">Seleccionar caja</option>{cashRegisters.filter((register) => register.active).map((register) => <option value={register.id} key={register.id}>{register.name} ({register.code})</option>)}</select><ChevronDown size={15} /></label>
         <label className="select-field"><UserRound size={17} /><select value={customer} onChange={(event) => setCustomer(event.target.value)}><option>Público general</option>{customers.filter((item) => item.active !== false).map((item) => <option key={item.id || item.rut}>{item.name}</option>)}</select><ChevronDown size={15} /></label>
 
         <div className="cart-items">
@@ -1180,7 +1290,7 @@ function PointOfSale({ products, setProducts, customers, sales, setSales, heldSa
         <div className="payment-tabs">
           {paymentMethods.map((method) => <button key={method} className={payment === method ? 'active' : ''} onClick={() => setPayment(method)}>{method}</button>)}
         </div>
-        <button className="checkout-button" disabled={!cart.length} onClick={completeSale}><span>Cobrar</span><strong>{money.format(subtotal)}</strong><ArrowRight size={19} /></button>
+        <button className="checkout-button" disabled={!cart.length || !activeRegisterId || checkoutSaving} onClick={completeSale}><span>{checkoutSaving ? 'Procesando...' : 'Cobrar'}</span><strong>{money.format(subtotal)}</strong><ArrowRight size={19} /></button>
         <div className="cart-footer-actions"><button disabled={!cart.length} onClick={holdCurrentSale}><Clock3 size={16} />Dejar en espera</button><button disabled={!cart.length} onClick={createQuote}><FileText size={16} />Cotizar</button></div>
       </aside>
     </div>
@@ -1392,11 +1502,12 @@ function HeldSalesModal({ sales, hasActiveCart, canDelete, onResume, onDelete, o
   )
 }
 
-function Inventory({ products, setProducts, notify, settings, currentUser, can, initialQuery = '' }) {
+function Inventory({ products, notify, settings, can, onSaveProduct, initialQuery = '' }) {
   const [query, setQuery] = useState(initialQuery)
   const [filter, setFilter] = useState('Todos')
   const [editing, setEditing] = useState(null)
   const [showProduct, setShowProduct] = useState(false)
+  const [productSaving, setProductSaving] = useState(false)
   useEffect(() => {
     if (!initialQuery) return
     setQuery(initialQuery)
@@ -1411,11 +1522,11 @@ function Inventory({ products, setProducts, notify, settings, currentUser, can, 
   })
   const totalValue = products.reduce((sum, item) => sum + item.cost * item.stock, 0)
 
-  const saveProduct = (event) => {
+  const saveProduct = async (event) => {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
     const draft = {
-      id: editing?.id || Date.now(),
+      id: editing?.id,
       sku: data.get('sku'),
       name: data.get('name'),
       category: data.get('category'),
@@ -1426,10 +1537,16 @@ function Inventory({ products, setProducts, notify, settings, currentUser, can, 
       cost: Number(data.get('cost')),
       location: data.get('location'),
       unit: data.get('unit'),
-      tone: editing?.tone || 'teal',
-      updatedBy: currentUser.name,
+      active: editing?.active !== false,
+      expectedOnHand: editing?.onHand,
     }
-    setProducts((current) => editing ? current.map((item) => item.id === editing.id ? draft : item) : [draft, ...current])
+    setProductSaving(true)
+    const result = await onSaveProduct(draft)
+    setProductSaving(false)
+    if (result.error) {
+      notify(result.error, 'warning')
+      return
+    }
     setShowProduct(false)
     setEditing(null)
     notify(editing ? 'Producto actualizado correctamente' : 'Producto creado correctamente')
@@ -1482,10 +1599,10 @@ function Inventory({ products, setProducts, notify, settings, currentUser, can, 
             <label>Unidad<select name="unit" defaultValue={editing?.unit || configuredUnits[0] || 'un'}>{[...new Set([...configuredUnits, ...products.map((product) => product.unit)])].map((item) => <option key={item}>{item}</option>)}</select></label>
             <label>Precio costo<input name="cost" type="number" min="0" defaultValue={editing?.cost || ''} required /></label>
             <label>Precio venta<input name="price" type="number" min="0" defaultValue={editing?.price || ''} required /></label>
-            <label>Stock actual<input name="stock" type="number" min="0" defaultValue={editing?.stock ?? 0} required /></label>
+            <label>Stock físico<input name="stock" type="number" min="0" defaultValue={editing?.onHand ?? editing?.stock ?? 0} required /><small>{editing?.reserved ? `${editing.reserved} unidades reservadas` : 'Existencias totales en bodega'}</small></label>
             <label>Stock mínimo<input name="minStock" type="number" min="0" defaultValue={editing?.minStock ?? settings.inventory.defaultMinStock} required /></label>
             <label className="span-2">Ubicación en bodega<input name="location" defaultValue={editing?.location} required placeholder="A-01-01" /></label>
-            <div className="modal-actions span-2"><button type="button" className="secondary-button" onClick={() => setShowProduct(false)}>Cancelar</button><button className="primary-button" type="submit"><Check size={17} />Guardar producto</button></div>
+            <div className="modal-actions span-2"><button type="button" className="secondary-button" disabled={productSaving} onClick={() => setShowProduct(false)}>Cancelar</button><button className="primary-button" type="submit" disabled={productSaving}><Check size={17} />{productSaving ? 'Guardando...' : 'Guardar producto'}</button></div>
           </form>
         </Modal>
       )}
@@ -1493,40 +1610,49 @@ function Inventory({ products, setProducts, notify, settings, currentUser, can, 
   )
 }
 
-function Receipts({ products, setProducts, receipts, setReceipts, suppliers, notify, currentUser, highlightId = null }) {
+function Receipts({ products, receipts, suppliers, notify, onReceiveInventory, highlightId = null }) {
   const [showForm, setShowForm] = useState(false)
   const [lines, setLines] = useState([])
-  const [productId, setProductId] = useState(String(products[0]?.id || ''))
+  const [productId, setProductId] = useState(String(products.find((product) => product.active !== false)?.id || ''))
   const [qty, setQty] = useState(1)
   const [cost, setCost] = useState(products[0]?.cost || 0)
+  const [receiptSaving, setReceiptSaving] = useState(false)
+  const receiptOperationRef = useRef(null)
 
   const selectProduct = (id) => {
     setProductId(id)
-    setCost(products.find((item) => item.id === Number(id))?.cost || 0)
+    setCost(products.find((item) => String(item.id) === String(id))?.cost || 0)
   }
   const addLine = () => {
-    const product = products.find((item) => item.id === Number(productId))
+    const product = products.find((item) => String(item.id) === String(productId))
     if (!product || qty < 1) return
     setLines((current) => [...current, { ...product, qty: Number(qty), cost: Number(cost) }])
     setQty(1)
   }
   const total = lines.reduce((sum, line) => sum + line.qty * line.cost, 0)
 
-  const saveReceipt = (event) => {
+  const saveReceipt = async (event) => {
     event.preventDefault()
-    if (!lines.length) return
+    if (!lines.length || receiptSaving) return
     const data = new FormData(event.currentTarget)
-    const sequence = receipts.reduce((highest, receipt) => Math.max(highest, Number(receipt.id.replace(/\D/g, '')) || 0), 0) + 1
-    const receipt = { id: `ING-${String(sequence).padStart(3, '0')}`, date: 'Hoy, ' + new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }), supplier: data.get('supplier'), document: data.get('document'), units: lines.reduce((sum, line) => sum + line.qty, 0), total, status: 'Recibido', responsible: currentUser.name, userId: currentUser.id }
-    setProducts((current) => current.map((product) => {
-      const received = lines.filter((line) => line.id === product.id).reduce((sum, line) => sum + line.qty, 0)
-      const latest = [...lines].reverse().find((line) => line.id === product.id)
-      return received ? { ...product, stock: product.stock + received, cost: latest.cost } : product
-    }))
-    setReceipts((current) => [receipt, ...current])
+    receiptOperationRef.current ||= createOperationKey()
+    setReceiptSaving(true)
+    const result = await onReceiveInventory({
+      idempotencyKey: receiptOperationRef.current,
+      supplierName: data.get('supplier'),
+      document: data.get('document'),
+      lines: lines.map((line) => ({ productId: line.id, quantity: line.qty, unitCost: line.cost })),
+    })
+    setReceiptSaving(false)
+    if (result.error) {
+      notify(result.error, 'warning')
+      return
+    }
+    const created = result.receipts.find((receipt) => receipt.dbId === result.receiptId) || result.receipts[0]
+    receiptOperationRef.current = null
     setLines([])
     setShowForm(false)
-    notify(`${receipt.id} ingresado: ${receipt.units} unidades recibidas`)
+    notify(`${created?.id || 'Ingreso'} registrado: ${created?.units || 0} unidades recibidas`)
   }
 
   return (
@@ -1551,14 +1677,14 @@ function Receipts({ products, setProducts, receipts, setReceipts, suppliers, not
               <label>Documento<input name="document" required placeholder="Factura o guía de despacho" /></label>
             </div>
             <div className="line-builder">
-              <label>Producto<select value={productId} onChange={(event) => selectProduct(event.target.value)}>{products.map((product) => <option value={product.id} key={product.id}>{product.sku} · {product.name}</option>)}</select></label>
+              <label>Producto<select value={productId} onChange={(event) => selectProduct(event.target.value)}>{products.filter((product) => product.active !== false).map((product) => <option value={product.id} key={product.id}>{product.sku} · {product.name}</option>)}</select></label>
               <label>Cantidad<input value={qty} onChange={(event) => setQty(event.target.value)} type="number" min="1" /></label>
               <label>Costo unitario<input value={cost} onChange={(event) => setCost(event.target.value)} type="number" min="0" /></label>
               <button type="button" className="secondary-button" onClick={addLine}><Plus size={17} />Agregar</button>
             </div>
             <LineTable lines={lines} setLines={setLines} valueKey="cost" />
             <div className="document-total"><span>Total del ingreso</span><strong>{money.format(total)}</strong></div>
-            <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setShowForm(false)}>Cancelar</button><button className="primary-button" disabled={!lines.length}><PackageCheck size={17} />Confirmar recepción</button></div>
+            <div className="modal-actions"><button type="button" className="secondary-button" disabled={receiptSaving} onClick={() => { receiptOperationRef.current = null; setShowForm(false) }}>Cancelar</button><button className="primary-button" disabled={!lines.length || receiptSaving}><PackageCheck size={17} />{receiptSaving ? 'Registrando...' : 'Confirmar recepción'}</button></div>
           </form>
         </Modal>
       )}
@@ -1566,14 +1692,17 @@ function Receipts({ products, setProducts, receipts, setReceipts, suppliers, not
   )
 }
 
-function Dispatches({ products, setProducts, customers, dispatches, setDispatches, notify, settings, currentUser, highlightId = null }) {
+function Dispatches({ products, customers, dispatches, notify, settings, onCreateDispatch, onAdvanceDispatch, highlightId = null }) {
   const [showForm, setShowForm] = useState(false)
   const [lines, setLines] = useState([])
-  const [productId, setProductId] = useState(String(products[0]?.id || ''))
+  const [productId, setProductId] = useState(String(products.find((product) => product.active !== false)?.id || ''))
   const [qty, setQty] = useState(1)
   const [customerId, setCustomerId] = useState('')
   const [delivery, setDelivery] = useState({ customer: '', contact: '', address: '' })
-  const availableProducts = settings.inventory.preventNegative ? products.filter((product) => product.stock > 0) : products
+  const [dispatchSaving, setDispatchSaving] = useState(false)
+  const [advancingId, setAdvancingId] = useState(null)
+  const dispatchOperationRef = useRef(null)
+  const availableProducts = products.filter((product) => product.active !== false && (!settings.inventory.preventNegative || product.stock > 0))
 
   const closeDispatchForm = () => {
     setShowForm(false)
@@ -1598,7 +1727,7 @@ function Dispatches({ products, setProducts, customers, dispatches, setDispatche
   }
 
   const addLine = () => {
-    const product = products.find((item) => item.id === Number(productId))
+    const product = products.find((item) => String(item.id) === String(productId))
     if (!product || qty < 1) return
     const alreadyAdded = lines.filter((line) => line.id === product.id).reduce((sum, line) => sum + line.qty, 0)
     if (settings.inventory.preventNegative && Number(qty) + alreadyAdded > product.stock) { notify(`Solo hay ${product.stock} unidades disponibles`, 'warning'); return }
@@ -1606,24 +1735,39 @@ function Dispatches({ products, setProducts, customers, dispatches, setDispatche
     setQty(1)
   }
 
-  const saveDispatch = (event) => {
+  const saveDispatch = async (event) => {
     event.preventDefault()
-    if (!lines.length) return
+    if (!lines.length || dispatchSaving) return
     const data = new FormData(event.currentTarget)
-    const sequence = dispatches.reduce((highest, dispatch) => Math.max(highest, Number(dispatch.id.replace(/\D/g, '')) || 0), 0) + 1
-    const dispatch = { id: `DES-${String(sequence).padStart(3, '0')}`, date: 'Hoy, ' + new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }), customer: delivery.customer.trim(), contact: delivery.contact.trim(), address: delivery.address.trim(), order: data.get('order').trim(), units: lines.reduce((sum, line) => sum + line.qty, 0), status: 'Preparando', responsible: currentUser.name, userId: currentUser.id }
-    setProducts((current) => current.map((product) => {
-      const outgoing = lines.filter((line) => line.id === product.id).reduce((sum, line) => sum + line.qty, 0)
-      return outgoing ? { ...product, stock: product.stock - outgoing } : product
-    }))
-    setDispatches((current) => [dispatch, ...current])
+    dispatchOperationRef.current ||= createOperationKey()
+    setDispatchSaving(true)
+    const result = await onCreateDispatch({
+      idempotencyKey: dispatchOperationRef.current,
+      customerName: delivery.customer.trim(),
+      contact: delivery.contact.trim(),
+      address: delivery.address.trim(),
+      orderReference: data.get('order').trim(),
+      lines: lines.map((line) => ({ productId: line.id, quantity: line.qty })),
+    })
+    setDispatchSaving(false)
+    if (result.error) {
+      notify(result.error, 'warning')
+      return
+    }
+    const created = result.dispatches.find((dispatch) => dispatch.dbId === result.dispatchId) || result.dispatches[0]
+    dispatchOperationRef.current = null
     closeDispatchForm()
-    notify(`${dispatch.id} creado y stock reservado`)
+    notify(`${created?.id || 'Despacho'} creado y stock reservado`)
   }
 
-  const advance = (id) => {
-    const order = ['Preparando', 'Despachado', 'Entregado']
-    setDispatches((current) => current.map((item) => item.id === id ? { ...item, status: order[Math.min(order.indexOf(item.status) + 1, 2)] } : item))
+  const advance = async (dispatch) => {
+    setAdvancingId(dispatch.dbId)
+    const result = await onAdvanceDispatch(dispatch.dbId, dispatch.status)
+    setAdvancingId(null)
+    if (result.error) {
+      notify(result.error, 'warning')
+      return
+    }
     notify('Estado del despacho actualizado')
   }
 
@@ -1635,7 +1779,7 @@ function Dispatches({ products, setProducts, customers, dispatches, setDispatche
           const Icon = [ClipboardCheck, Truck, PackageCheck][index]
           const items = dispatches.filter((item) => item.status === status)
           return <div className="dispatch-column" key={status}><div className="column-title"><span><Icon size={18} /></span><strong>{status}</strong><em>{items.length}</em></div>
-            <div className="dispatch-items">{items.length ? items.map((item) => <div className={`dispatch-card ${item.id === highlightId ? 'search-highlight' : ''}`} key={item.id}><div><strong>{item.id}</strong><span className={`status-dot s${index}`} /></div><h4>{item.customer}</h4><p>{item.order}</p>{(item.address || item.contact) && <div className="dispatch-delivery">{item.address && <span><MapPin size={13} />{item.address}</span>}{item.contact && <span><Phone size={13} />{item.contact}</span>}</div>}<div className="dispatch-meta"><span><Box size={14} />{item.units} unidades</span><span><Clock3 size={14} />{item.date}</span></div><span className="dispatch-owner"><UserRound size={13} />{item.responsible || 'Matías Dintrans'}</span>{index < 2 && <button onClick={() => advance(item.id)}>{index === 0 ? 'Marcar despachado' : 'Confirmar entrega'}<ArrowRight size={15} /></button>}</div>) : <div className="column-empty">Sin pedidos en esta etapa</div>}</div>
+            <div className="dispatch-items">{items.length ? items.map((item) => <div className={`dispatch-card ${item.id === highlightId ? 'search-highlight' : ''}`} key={item.id}><div><strong>{item.id}</strong><span className={`status-dot s${index}`} /></div><h4>{item.customer}</h4><p>{item.order}</p>{(item.address || item.contact) && <div className="dispatch-delivery">{item.address && <span><MapPin size={13} />{item.address}</span>}{item.contact && <span><Phone size={13} />{item.contact}</span>}</div>}<div className="dispatch-meta"><span><Box size={14} />{item.units} unidades</span><span><Clock3 size={14} />{item.date}</span></div><span className="dispatch-owner"><UserRound size={13} />{item.responsible || 'Matías Dintrans'}</span>{index < 2 && <button disabled={advancingId === item.dbId} onClick={() => advance(item)}>{advancingId === item.dbId ? 'Actualizando...' : index === 0 ? 'Marcar despachado' : 'Confirmar entrega'}<ArrowRight size={15} /></button>}</div>) : <div className="column-empty">Sin pedidos en esta etapa</div>}</div>
           </div>
         })}
       </section>
@@ -1652,7 +1796,7 @@ function Dispatches({ products, setProducts, customers, dispatches, setDispatche
             <div className="line-builder dispatch-line"><label>Producto<select value={productId} onChange={(event) => setProductId(event.target.value)}>{availableProducts.map((product) => <option value={product.id} key={product.id}>{product.sku} · {product.name} ({product.stock} disp.)</option>)}</select></label><label>Cantidad<input value={qty} onChange={(event) => setQty(event.target.value)} type="number" min="1" /></label><button type="button" className="secondary-button" onClick={addLine}><Plus size={17} />Agregar</button></div>
             <LineTable lines={lines} setLines={setLines} />
             <div className="document-total"><span>Total de unidades</span><strong>{lines.reduce((sum, line) => sum + line.qty, 0)}</strong></div>
-            <div className="modal-actions"><button type="button" className="secondary-button" onClick={closeDispatchForm}>Cancelar</button><button className="primary-button" disabled={!lines.length}><Truck size={17} />Crear despacho</button></div>
+            <div className="modal-actions"><button type="button" className="secondary-button" disabled={dispatchSaving} onClick={() => { dispatchOperationRef.current = null; closeDispatchForm() }}>Cancelar</button><button className="primary-button" disabled={!lines.length || dispatchSaving}><Truck size={17} />{dispatchSaving ? 'Reservando...' : 'Crear despacho'}</button></div>
           </form>
         </Modal>
       )}
@@ -2013,12 +2157,14 @@ function Reports({ products, sales, notify, settings, can, initialQuery = '' }) 
   )
 }
 
-function Configuration({ settings, setSettings, products, setProducts, customers, setCustomers, sales, setSales, receipts, setReceipts, dispatches, setDispatches, suppliers, setSuppliers, heldSales, setHeldSales, quotes, setQuotes, users, currentUser, readNotifications, setReadNotifications, initialSection, onSectionChange, notify, onSaveUser }) {
+function Configuration({ settings, setSettings, products, setProducts, customers, setCustomers, sales, setSales, receipts, setReceipts, dispatches, setDispatches, suppliers, setSuppliers, heldSales, setHeldSales, quotes, setQuotes, users, currentUser, readNotifications, setReadNotifications, cashRegisters, initialSection, onSectionChange, notify, onSaveUser, onCreateCashRegister, onImportProducts }) {
   const [section, setSection] = useState(initialSection)
   const [draft, setDraft] = useState(settings)
   const [confirmReset, setConfirmReset] = useState(false)
   const [userDraft, setUserDraft] = useState(null)
   const [userSaving, setUserSaving] = useState(false)
+  const [newRegister, setNewRegister] = useState({ name: '', code: '' })
+  const [registerSaving, setRegisterSaving] = useState(false)
   const importRef = useRef(null)
 
   useEffect(() => setDraft(settings), [settings])
@@ -2160,6 +2306,19 @@ function Configuration({ settings, setSettings, products, setProducts, customers
     notify(userDraft.id ? 'Usuario actualizado correctamente' : 'Usuario creado correctamente')
   }
 
+  const addCashRegister = async () => {
+    if (newRegister.name.trim().length < 2 || registerSaving) return
+    setRegisterSaving(true)
+    const result = await onCreateCashRegister(newRegister)
+    setRegisterSaving(false)
+    if (result.error) {
+      notify(result.error, 'warning')
+      return
+    }
+    setNewRegister({ name: '', code: '' })
+    notify('Caja agregada y disponible para esta sucursal')
+  }
+
   const exportBackup = () => {
     const backup = {
       version: 2,
@@ -2187,17 +2346,18 @@ function Configuration({ settings, setSettings, products, setProducts, customers
       const restoredSettings = normalizeSettings(data.settings)
       const restoredQuotes = Array.isArray(data.quotes) ? data.quotes : []
       if (!Array.isArray(restoredSettings.sales.paymentMethods) || !restoredSettings.sales.paymentMethods.length) throw new Error('invalid')
+      const productResult = await onImportProducts(data.products)
+      if (productResult.error) {
+        notify(productResult.error, 'warning')
+        return
+      }
       setSettings(restoredSettings)
-      setProducts(data.products)
       setCustomers(Array.isArray(data.customers) ? data.customers : [])
-      setSales(data.sales)
-      setReceipts(Array.isArray(data.receipts) ? data.receipts : [])
-      setDispatches(Array.isArray(data.dispatches) ? data.dispatches : [])
       setSuppliers(Array.isArray(data.suppliers) ? data.suppliers : [])
       setHeldSales(Array.isArray(data.heldSales) ? data.heldSales : [])
       setQuotes(restoredQuotes)
       setReadNotifications(data.readNotifications && typeof data.readNotifications === 'object' ? data.readNotifications : {})
-      notify('Respaldo restaurado correctamente')
+      notify('Catálogos y configuración restaurados; el historial transaccional se conserva')
     } catch {
       notify('El archivo no corresponde a un respaldo válido', 'warning')
     }
@@ -2206,17 +2366,13 @@ function Configuration({ settings, setSettings, products, setProducts, customers
   const restoreDefaults = () => {
     setSettings(defaultSettings)
     setDraft(defaultSettings)
-    setProducts(defaultProducts)
     setCustomers(defaultCustomers)
-    setSales(initialSales)
-    setReceipts(initialReceipts)
-    setDispatches(initialDispatches)
     setSuppliers(defaultSuppliers)
     setHeldSales(defaultHeldSales)
     setQuotes([])
     setReadNotifications({})
     setConfirmReset(false)
-    notify('ERP restablecido sin datos operativos')
+    notify('Preferencias y catálogos auxiliares restablecidos')
   }
 
   return (
@@ -2253,8 +2409,12 @@ function Configuration({ settings, setSettings, products, setProducts, customers
           {section === 'sales' && <>
             <SettingsHeading icon={ShoppingCart} title="Ventas y caja" text="Parámetros utilizados al cobrar y emitir una boleta." />
             <div className="settings-form-grid">
-              <label>Nombre de caja<input value={draft.sales.register} onChange={(event) => updateSection('sales', 'register', event.target.value)} required /></label>
               <label>Medio de pago predeterminado<select value={draft.sales.defaultPayment} onChange={(event) => updateSection('sales', 'defaultPayment', event.target.value)}>{draft.sales.paymentMethods.map((method) => <option key={method}>{method}</option>)}</select></label>
+            </div>
+            <div className="settings-subsection cash-register-settings">
+              <div><strong>Cajas de la sucursal</strong><small>Cada terminal elige su caja en el punto de venta.</small></div>
+              <div className="cash-register-list">{cashRegisters.map((register) => <span key={register.id}><strong>{register.name}</strong><small>{register.code}{register.sessionId ? ' · Sesión abierta' : ''}</small></span>)}</div>
+              {userCan(currentUser, 'manageUsers') && <div className="cash-register-create"><input value={newRegister.name} onChange={(event) => setNewRegister((current) => ({ ...current, name: event.target.value }))} placeholder="Ej. Caja 02" /><input value={newRegister.code} onChange={(event) => setNewRegister((current) => ({ ...current, code: event.target.value.toUpperCase() }))} placeholder="Código opcional" /><button type="button" className="secondary-button" disabled={registerSaving || newRegister.name.trim().length < 2} onClick={addCashRegister}><Plus size={16} />{registerSaving ? 'Agregando...' : 'Agregar caja'}</button></div>}
             </div>
             <div className="settings-subsection">
               <div><strong>Medios de pago habilitados</strong><small>Disponibles en el punto de venta</small></div>
@@ -2266,8 +2426,8 @@ function Configuration({ settings, setSettings, products, setProducts, customers
 
           {section === 'documents' && <>
             <SettingsHeading icon={FileText} title="Documentos" text="Numeración, vigencia y contenido de impresión." />
+            <div className="initial-load-notice"><ShieldCheck size={20} /><span><strong>Folios de venta protegidos por Neon</strong><small>Se asignan de forma atómica para que dos cajas nunca emitan el mismo número.</small></span></div>
             <div className="settings-form-grid">
-              <label>Próximo folio de venta<input type="number" min="1" value={draft.documents.saleSequence} onChange={(event) => updateSection('documents', 'saleSequence', event.target.value)} required /></label>
               <label>Próximo correlativo de cotización<input type="number" min="1" value={draft.documents.quoteSequence} onChange={(event) => updateSection('documents', 'quoteSequence', event.target.value)} required /></label>
               <label>Vigencia de cotizaciones<input type="number" min="1" value={draft.documents.quoteValidityDays} onChange={(event) => updateSection('documents', 'quoteValidityDays', event.target.value)} required /><small>Días corridos</small></label>
               <label>Formato de boleta<select value={draft.documents.receiptFormat} onChange={(event) => updateSection('documents', 'receiptFormat', event.target.value)}><option>Térmica 80 mm</option><option>Carta</option></select></label>
@@ -2321,7 +2481,7 @@ function Configuration({ settings, setSettings, products, setProducts, customers
             </div>
           </>}
 
-          {section === 'initial-load' && <InitialLoadPanel products={products} setProducts={setProducts} customers={customers} setCustomers={setCustomers} suppliers={suppliers} setSuppliers={setSuppliers} setSettings={setSettings} notify={notify} />}
+          {section === 'initial-load' && <InitialLoadPanel products={products} customers={customers} setCustomers={setCustomers} suppliers={suppliers} setSuppliers={setSuppliers} setSettings={setSettings} notify={notify} onImportProducts={onImportProducts} />}
 
           {section === 'backup' && <>
             <SettingsHeading icon={Box} title="Respaldo y restauración" text="Exporta o restaura la información sincronizada con Neon." />
@@ -2334,15 +2494,15 @@ function Configuration({ settings, setSettings, products, setProducts, customers
             <div className="backup-actions">
               <button type="button" onClick={exportBackup}><span><Download size={20} /></span><span><strong>Descargar respaldo</strong><small>Exporta configuración y registros en formato JSON</small></span><ArrowRight size={16} /></button>
               <button type="button" onClick={() => importRef.current?.click()}><span><Upload size={20} /></span><span><strong>Restaurar respaldo</strong><small>Importa un archivo generado por este sistema</small></span><ArrowRight size={16} /></button>
-              <button type="button" className="danger" onClick={() => setConfirmReset(true)}><span><RotateCcw size={20} /></span><span><strong>Vaciar datos del ERP</strong><small>Elimina los registros operativos y restablece la configuración</small></span><ArrowRight size={16} /></button>
+              <button type="button" className="danger" onClick={() => setConfirmReset(true)}><span><RotateCcw size={20} /></span><span><strong>Restablecer preferencias</strong><small>Reinicia configuración y catálogos auxiliares; conserva ventas, stock y movimientos</small></span><ArrowRight size={16} /></button>
               <input ref={importRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importBackup} />
             </div>
           </>}
         </form>
       </div>
 
-      {confirmReset && <Modal title="Vaciar datos del ERP" subtitle="Esta acción eliminará los registros actuales" onClose={() => setConfirmReset(false)}>
-        <div className="reset-confirm"><AlertTriangle size={24} /><p>Descarga un respaldo antes de continuar si necesitas conservar tus ventas, productos o proveedores.</p></div>
+      {confirmReset && <Modal title="Restablecer preferencias" subtitle="Ventas, inventario y movimientos no se eliminarán" onClose={() => setConfirmReset(false)}>
+        <div className="reset-confirm"><AlertTriangle size={24} /><p>Se reiniciarán la configuración, clientes, proveedores, cotizaciones y ventas en espera.</p></div>
         <div className="modal-actions"><button className="secondary-button" onClick={() => setConfirmReset(false)}>Cancelar</button><button className="danger-button confirm" onClick={restoreDefaults}><RotateCcw size={16} />Confirmar restauración</button></div>
       </Modal>}
       {userDraft && <Modal title={userDraft.id ? 'Editar usuario' : 'Nuevo usuario'} subtitle="Perfil de acceso al sistema" onClose={() => setUserDraft(null)} wide>
@@ -2367,11 +2527,12 @@ function Configuration({ settings, setSettings, products, setProducts, customers
   )
 }
 
-function InitialLoadPanel({ products, setProducts, customers, setCustomers, suppliers, setSuppliers, setSettings, notify }) {
+function InitialLoadPanel({ products, customers, setCustomers, suppliers, setSuppliers, setSettings, notify, onImportProducts }) {
   const uploadRef = useRef(null)
   const [preview, setPreview] = useState(null)
   const [reading, setReading] = useState(false)
   const [downloading, setDownloading] = useState(null)
+  const [importing, setImporting] = useState(false)
 
   const downloadTemplate = async (templateId = 'all') => {
     setDownloading(templateId)
@@ -2414,10 +2575,16 @@ function InitialLoadPanel({ products, setProducts, customers, setCustomers, supp
     }
   }
 
-  const confirmInitialLoad = () => {
+  const confirmInitialLoad = async () => {
     if (!preview || preview.errors.length || !preview.totalRows) return
     const merged = mergeInitialLoad(preview, { products, customers, suppliers })
-    setProducts(merged.products)
+    setImporting(true)
+    const result = await onImportProducts(merged.products)
+    setImporting(false)
+    if (result.error) {
+      notify(result.error, 'warning')
+      return
+    }
     setCustomers(merged.customers)
     setSuppliers(merged.suppliers)
 
@@ -2483,7 +2650,7 @@ function InitialLoadPanel({ products, setProducts, customers, setCustomers, supp
 
       <div className="initial-load-actions">
         <button type="button" className="secondary-button" onClick={() => setPreview(null)}>Cancelar</button>
-        <button type="button" className="primary-button" disabled={Boolean(preview.errors.length) || !preview.totalRows} onClick={confirmInitialLoad}><Upload size={16} />Confirmar carga</button>
+        <button type="button" className="primary-button" disabled={Boolean(preview.errors.length) || !preview.totalRows || importing} onClick={confirmInitialLoad}><Upload size={16} />{importing ? 'Importando...' : 'Confirmar carga'}</button>
       </div>
     </section>}
   </>

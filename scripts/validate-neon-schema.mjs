@@ -41,6 +41,16 @@ try {
   `)
   assert.equal(syncColumns.rows.length, 2, 'La migración de sincronización debe agregar metadatos de acceso')
 
+  const transactionColumns = await database.query(`
+    select table_name, column_name
+    from information_schema.columns
+    where table_schema = 'public'
+      and ((table_name = 'sales' and column_name in ('cash_register_id', 'idempotency_key'))
+        or (table_name = 'inventory_receipts' and column_name = 'idempotency_key')
+        or (table_name = 'dispatches' and column_name = 'idempotency_key'))
+  `)
+  assert.equal(transactionColumns.rows.length, 4, 'Las operaciones deben incluir caja e idempotencia transaccional')
+
   const user = await database.query(`
     insert into public.app_users (username, full_name, password_hash)
     values ('admin-prueba', 'Administrador de prueba', '$2b$12$hash.solo.para.validar.esquema')
@@ -105,6 +115,7 @@ try {
   console.log('OK 34 tablas, 6 funciones y 2 vistas')
   console.log(`OK ${migrationFiles.length} migraciones aplicadas en orden`)
   console.log('OK bootstrap vacío, control de roles y ajuste de inventario')
+  console.log('OK caja por venta y claves de idempotencia transaccional')
 } finally {
   await database.close()
 }
