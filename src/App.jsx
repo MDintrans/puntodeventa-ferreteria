@@ -233,8 +233,6 @@ const defaultUsers = [
 const userInitials = (name) => String(name || '').split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join('').toUpperCase() || 'US'
 const userCan = (user, permission) => Boolean(user?.active && user.permissions?.includes(permission))
 
-const AUTH_SESSION_KEY = 'mf-auth-session'
-const AUTH_SESSION_DURATION = 12 * 60 * 60 * 1000
 const PASSWORD_ITERATIONS = 210000
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase()
 const normalizeUsername = (username) => String(username || '').trim().toLowerCase().replace(/\s+/g, '')
@@ -288,20 +286,6 @@ const verifyPassword = async (password, user) => {
   }
 }
 
-const readAuthSession = () => {
-  try {
-    const session = JSON.parse(localStorage.getItem(AUTH_SESSION_KEY))
-    if (!session?.userId || Number(session.expiresAt) <= Date.now()) {
-      localStorage.removeItem(AUTH_SESSION_KEY)
-      return null
-    }
-    return session.userId
-  } catch {
-    localStorage.removeItem(AUTH_SESSION_KEY)
-    return null
-  }
-}
-
 function usePersistedState(key, fallback, normalize = (value) => value) {
   const [state, setState] = useState(() => {
     try {
@@ -333,7 +317,7 @@ function App() {
   const [settings, setSettings] = usePersistedState('mf-settings', defaultSettings, normalizeSettings)
   const [users, setUsers] = usePersistedState('mf-users', defaultUsers, normalizeUsers)
   const [currentUserId, setCurrentUserId] = usePersistedState('mf-current-user', 1)
-  const [sessionUserId, setSessionUserId] = useState(readAuthSession)
+  const [sessionUserId, setSessionUserId] = useState(null)
   const [readNotifications, setReadNotifications] = usePersistedState('mf-read-notifications', {})
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [toast, setToast] = useState(null)
@@ -356,28 +340,6 @@ function App() {
     const timer = setTimeout(() => setToast(null), 3200)
     return () => clearTimeout(timer)
   }, [toast])
-
-  useEffect(() => {
-    if (!sessionUserId || authenticatedUser) return
-    localStorage.removeItem(AUTH_SESSION_KEY)
-    setSessionUserId(null)
-  }, [sessionUserId, authenticatedUser])
-
-  useEffect(() => {
-    if (!authenticatedUser) return
-    try {
-      const session = JSON.parse(localStorage.getItem(AUTH_SESSION_KEY))
-      const remaining = Math.max(0, Number(session?.expiresAt) - Date.now())
-      const timer = window.setTimeout(() => {
-        localStorage.removeItem(AUTH_SESSION_KEY)
-        setSessionUserId(null)
-      }, remaining)
-      return () => window.clearTimeout(timer)
-    } catch {
-      localStorage.removeItem(AUTH_SESSION_KEY)
-      setSessionUserId(null)
-    }
-  }, [authenticatedUser?.id])
 
   useEffect(() => {
     if (!authenticatedUser) return
@@ -427,11 +389,6 @@ function App() {
   const notify = (message, tone = 'success') => setToast({ message, tone })
 
   const establishAuthSession = (user) => {
-    localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({
-      userId: user.id,
-      createdAt: new Date().toISOString(),
-      expiresAt: Date.now() + AUTH_SESSION_DURATION,
-    }))
     setUsers((current) => current.map((item) => item.id === user.id ? { ...item, lastLoginAt: new Date().toISOString() } : item))
     setCurrentUserId(user.id)
     setSessionUserId(user.id)
@@ -473,7 +430,6 @@ function App() {
   }
 
   const logout = () => {
-    localStorage.removeItem(AUTH_SESSION_KEY)
     setSessionUserId(null)
     setAccountOpen(false)
     setNotificationOpen(false)
