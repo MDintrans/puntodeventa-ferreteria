@@ -21,7 +21,9 @@ servidor o API. Nunca debe renombrarse como `VITE_DATABASE_URL`.
 - Folios atómicos por sucursal y tipo de documento.
 - Configuración del negocio y notificaciones leídas.
 
-En total se crean 33 tablas de negocio, 6 funciones transaccionales y 2 vistas.
+En total se crean 34 tablas, 6 funciones transaccionales y 2 vistas. La tabla
+`erp_state_snapshots` mantiene sincronizado el estado operativo utilizado por la
+interfaz mientras los usuarios, sesiones y permisos permanecen normalizados.
 Los montos se almacenan como pesos chilenos enteros (`bigint`) y las cantidades
 usan tres decimales para admitir unidades como metros o kilos.
 
@@ -48,11 +50,16 @@ Desde la raíz del proyecto:
 npm install
 npm run db:validate
 npm run db:migrate
+npm run api:validate
 ```
 
 `db:validate` levanta PostgreSQL en memoria y comprueba la sintaxis, relaciones,
 creación inicial, protección del último administrador y ajuste de inventario sin
 necesitar credenciales de Neon.
+
+`api:validate` comprueba contra Neon el bootstrap, bcrypt, las sesiones y el
+estado sincronizado dentro de una transacción que siempre se revierte, por lo
+que no deja datos de prueba.
 
 El ejecutor registra cada archivo en `public.schema_migrations`, guarda su hash
 y ejecuta cada migración dentro de una transacción. Es seguro volver a ejecutar
@@ -65,7 +72,7 @@ Para comprobar una base existente:
 npm run db:verify
 ```
 
-La validación exige que estén presentes las 33 tablas ERP, las 6 funciones, las
+La validación exige que estén presentes las 34 tablas ERP, las 6 funciones, las
 2 vistas y el historial de migraciones.
 
 ## Estado inicial
@@ -87,8 +94,9 @@ select * from public.bootstrap_business(
 ```
 
 Las contraseñas se guardan únicamente como hash bcrypt en
-`app_users.password_hash`. El alta y el inicio de sesión deben realizarse desde
-la API del ERP; nunca se envía ese hash al navegador.
+`app_users.password_hash`. El alta y el inicio de sesión se realizan desde la
+API privada del ERP; el hash nunca se envía al navegador. Las sesiones usan una
+cookie `HttpOnly` y se registran en `user_sessions`.
 
 ## Stock inicial
 
@@ -109,10 +117,38 @@ select * from public.adjust_inventory(
 `product_stock` entrega el catálogo con stock físico, reservado y disponible.
 `inventory_valuation` entrega la valorización por sucursal.
 
-## Integración pendiente con la interfaz
+## Sincronización con la interfaz
 
-La interfaz actual todavía conserva sus registros operacionales en
-`localStorage`. Montar el esquema no mueve esos datos automáticamente. El paso
-siguiente es agregar una API privada que maneje sesiones y traduzca las acciones
-de los módulos a transacciones PostgreSQL. La API usará `DATABASE_URL`; el
-navegador hablará sólo con endpoints HTTPS.
+La interfaz ya no utiliza `localStorage` como fuente de datos. Después del
+inicio de sesión carga el estado de la organización desde Neon y envía los
+cambios a `PATCH /api/state`. Los cambios se agrupan durante unos milisegundos y
+la cabecera del ERP muestra si Neon está sincronizado, guardando o desconectado.
+
+El servidor Node usa `DATABASE_URL`; el navegador sólo consume endpoints del
+mismo origen bajo `/api`. Productos, ventas, ingresos, despachos, proveedores,
+clientes, cotizaciones, ventas en espera, configuración y notificaciones se
+conservan en `erp_state_snapshots`. Usuarios, membresías, sesiones y auditoría
+usan sus tablas relacionales dedicadas.
+
+## Primer inicio
+
+Con la base vacía, el login muestra **Configura el acceso inicial**. El usuario
+propuesto es `matias`; al definir su contraseña, la API crea en una única
+transacción el administrador, la organización, Casa Matriz, caja, folios,
+configuración inicial y estado sincronizado. No se crean credenciales de prueba.
+
+## Despliegue en Render
+
+El archivo `render.yaml` configura el servicio web, la compilación, las
+migraciones y el health check. En Render sólo debes cargar `DATABASE_URL` como
+variable secreta. El despliegue ejecuta:
+
+```powershell
+npm ci
+npm run build
+npm run db:migrate
+npm start
+```
+
+`/api/health` responde correctamente sólo cuando el servidor puede consultar
+Neon. En producción la cookie de sesión se marca `Secure` y `HttpOnly`.

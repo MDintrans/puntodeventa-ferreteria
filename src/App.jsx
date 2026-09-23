@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import bcrypt from 'bcryptjs'
 import {
   AlertTriangle,
   ArrowDownToLine,
@@ -119,6 +118,7 @@ const defaultSettings = {
   documents: {
     saleSequence: 1,
     quoteSequence: 1,
+    heldSaleSequence: 1,
     quoteValidityDays: 15,
     receiptFormat: 'Térmica 80 mm',
     receiptFooter: 'Conserve esta boleta para cambios o devoluciones.',
@@ -160,34 +160,6 @@ const initialSales = []
 const initialReceipts = []
 const initialDispatches = []
 const defaultSuppliers = []
-
-const EMPTY_DATA_VERSION = 'empty-operational-data-v1'
-const operationalStorageKeys = [
-  'mf-products',
-  'mf-customers',
-  'mf-sales',
-  'mf-receipts',
-  'mf-dispatches',
-  'mf-suppliers',
-  'mf-held-sales',
-  'mf-quotes',
-  'mf-settings',
-  'mf-users',
-  'mf-current-user',
-  'mf-read-notifications',
-  'mf-quote-sequence',
-  'mf-held-sale-sequence',
-]
-
-const resetLegacyOperationalData = () => {
-  try {
-    if (localStorage.getItem('mf-data-version') === EMPTY_DATA_VERSION) return
-    operationalStorageKeys.forEach((key) => localStorage.removeItem(key))
-    localStorage.setItem('mf-data-version', EMPTY_DATA_VERSION)
-  } catch {
-    // The in-memory empty defaults still apply if storage is unavailable.
-  }
-}
 
 const navItems = [
   { id: 'dashboard', label: 'Resumen', icon: LayoutDashboard },
@@ -233,13 +205,11 @@ const defaultUsers = [
 const userInitials = (name) => String(name || '').split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join('').toUpperCase() || 'US'
 const userCan = (user, permission) => Boolean(user?.active && user.permissions?.includes(permission))
 
-const PASSWORD_ITERATIONS = 210000
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase()
 const normalizeUsername = (username) => String(username || '').trim().toLowerCase().replace(/\s+/g, '')
 const normalizeSearchValue = (value) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
 const getUsername = (user) => normalizeUsername(user?.username || normalizeEmail(user?.email).split('@')[0] || `usuario${user?.id || ''}`)
-const hasPasswordCredential = (user) => Boolean(user?.passwordHash && (user.passwordVersion === 2 || user.passwordSalt))
-const normalizeUsers = (value) => (Array.isArray(value) && value.length ? value : defaultUsers).map((user) => ({ ...user, username: getUsername(user) }))
+const normalizeUsers = (value) => (Array.isArray(value) ? value : defaultUsers).map((user) => ({ ...user, username: getUsername(user) }))
 
 const passwordValidationMessage = (password) => {
   if (password.length < 8) return 'La contraseña debe tener al menos 8 caracteres'
@@ -247,78 +217,40 @@ const passwordValidationMessage = (password) => {
   return ''
 }
 
-const base64ToBytes = (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0))
-
-const derivePasswordHash = async (password, salt) => {
-  const material = await globalThis.crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits'],
-  )
-  const result = await globalThis.crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt, iterations: PASSWORD_ITERATIONS, hash: 'SHA-256' },
-    material,
-    256,
-  )
-  return new Uint8Array(result)
-}
-
-const createPasswordCredential = async (password) => {
-  const passwordHash = await bcrypt.hash(password, 10)
-  return { passwordSalt: null, passwordHash, passwordVersion: 2 }
-}
-
-const verifyPassword = async (password, user) => {
-  if (!hasPasswordCredential(user)) return false
+const apiRequest = async (path, options = {}) => {
   try {
-    if (user.passwordVersion === 2 || user.passwordHash.startsWith('$2')) return await bcrypt.compare(password, user.passwordHash)
-    if (!globalThis.crypto?.subtle || !user.passwordSalt) return false
-    const expected = base64ToBytes(user.passwordHash)
-    const actual = await derivePasswordHash(password, base64ToBytes(user.passwordSalt))
-    if (expected.length !== actual.length) return false
-    let difference = 0
-    expected.forEach((value, index) => { difference |= value ^ actual[index] })
-    return difference === 0
+    const response = await fetch(path, {
+      credentials: 'same-origin',
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...options.headers },
+    })
+    const payload = response.status === 204 ? {} : await response.json().catch(() => ({}))
+    return response.ok ? payload : { ...payload, error: payload.error || 'No fue posible conectar con el servidor', status: response.status }
   } catch {
-    return false
+    return { error: 'No fue posible conectar con Neon. Revisa la conexión del servidor.', status: 0 }
   }
 }
 
-function usePersistedState(key, fallback, normalize = (value) => value) {
-  const [state, setState] = useState(() => {
-    try {
-      const saved = localStorage.getItem(key)
-      return saved ? normalize(JSON.parse(saved)) : fallback
-    } catch {
-      return fallback
-    }
-  })
-
-  useEffect(() => {
-    localStorage.setItem(key, JSON.stringify(state))
-  }, [key, state])
-
-  return [state, setState]
-}
-
 function App() {
-  resetLegacyOperationalData()
   const [activeView, setActiveView] = useState('dashboard')
-  const [products, setProducts] = usePersistedState('mf-products', defaultProducts)
-  const [customers, setCustomers] = usePersistedState('mf-customers', defaultCustomers)
-  const [sales, setSales] = usePersistedState('mf-sales', initialSales)
-  const [receipts, setReceipts] = usePersistedState('mf-receipts', initialReceipts)
-  const [dispatches, setDispatches] = usePersistedState('mf-dispatches', initialDispatches)
-  const [suppliers, setSuppliers] = usePersistedState('mf-suppliers', defaultSuppliers)
-  const [heldSales, setHeldSales] = usePersistedState('mf-held-sales', defaultHeldSales)
-  const [quotes, setQuotes] = usePersistedState('mf-quotes', [])
-  const [settings, setSettings] = usePersistedState('mf-settings', defaultSettings, normalizeSettings)
-  const [users, setUsers] = usePersistedState('mf-users', defaultUsers, normalizeUsers)
-  const [currentUserId, setCurrentUserId] = usePersistedState('mf-current-user', 1)
+  const [products, setProducts] = useState(defaultProducts)
+  const [customers, setCustomers] = useState(defaultCustomers)
+  const [sales, setSales] = useState(initialSales)
+  const [receipts, setReceipts] = useState(initialReceipts)
+  const [dispatches, setDispatches] = useState(initialDispatches)
+  const [suppliers, setSuppliers] = useState(defaultSuppliers)
+  const [heldSales, setHeldSales] = useState(defaultHeldSales)
+  const [quotes, setQuotes] = useState([])
+  const [settings, setSettings] = useState(defaultSettings)
+  const [users, setUsers] = useState(defaultUsers)
+  const [currentUserId, setCurrentUserId] = useState(1)
   const [sessionUserId, setSessionUserId] = useState(null)
-  const [readNotifications, setReadNotifications] = usePersistedState('mf-read-notifications', {})
+  const [readNotifications, setReadNotifications] = useState({})
+  const [authStatus, setAuthStatus] = useState({ loading: true, error: '', setupRequired: true, businessName: defaultSettings.business.name, branchName: defaultSettings.business.branch })
+  const [authStatusAttempt, setAuthStatusAttempt] = useState(0)
+  const [syncReady, setSyncReady] = useState(false)
+  const [syncStatus, setSyncStatus] = useState('idle')
+  const [syncRetry, setSyncRetry] = useState(0)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [toast, setToast] = useState(null)
   const [notificationOpen, setNotificationOpen] = useState(false)
@@ -329,17 +261,107 @@ function App() {
   const [moduleSearch, setModuleSearch] = useState({ view: null, query: '', id: null })
   const globalSearchInputRef = useRef(null)
   const globalSearchRef = useRef(null)
+  const lastSyncedStateRef = useRef({})
   const authenticatedUser = users.find((user) => String(user.id) === String(sessionUserId) && user.active) || null
   const currentUser = authenticatedUser || users.find((user) => user.active) || defaultUsers[0]
-  const setupRequired = !users.some((user) => user.active && hasPasswordCredential(user))
-  const initialAdminUsername = getUsername(users.find((user) => user.active && user.role === 'Administrador') || defaultUsers[0])
+  const setupRequired = authStatus.setupRequired
+  const initialAdminUsername = setupRequired ? 'matias' : ''
   const can = (permission) => userCan(currentUser, permission)
+
+  useEffect(() => {
+    let active = true
+    setAuthStatus((current) => ({ ...current, loading: true, error: '' }))
+    apiRequest('/api/auth/status').then((result) => {
+      if (!active) return
+      if (result.error) {
+        setAuthStatus((current) => ({ ...current, loading: false, error: result.error }))
+        return
+      }
+      setAuthStatus({ loading: false, error: '', ...result })
+    })
+    return () => { active = false }
+  }, [authStatusAttempt])
+
+  const synchronizedState = {
+    settings,
+    products,
+    customers,
+    sales,
+    receipts,
+    dispatches,
+    suppliers,
+    heldSales,
+    quotes,
+    readNotifications,
+  }
+
+  const hydrateRemoteState = (payload) => {
+    const remote = payload.state || {}
+    const nextSettings = normalizeSettings(remote.settings || defaultSettings)
+    nextSettings.business = {
+      ...nextSettings.business,
+      name: remote.settings?.business?.name || payload.organization?.name || nextSettings.business.name,
+      branch: remote.settings?.business?.branch || payload.branch?.name || nextSettings.business.branch,
+    }
+    const nextState = {
+      settings: nextSettings,
+      products: Array.isArray(remote.products) ? remote.products : defaultProducts,
+      customers: Array.isArray(remote.customers) ? remote.customers : defaultCustomers,
+      sales: Array.isArray(remote.sales) ? remote.sales : initialSales,
+      receipts: Array.isArray(remote.receipts) ? remote.receipts : initialReceipts,
+      dispatches: Array.isArray(remote.dispatches) ? remote.dispatches : initialDispatches,
+      suppliers: Array.isArray(remote.suppliers) ? remote.suppliers : defaultSuppliers,
+      heldSales: Array.isArray(remote.heldSales) ? remote.heldSales : defaultHeldSales,
+      quotes: Array.isArray(remote.quotes) ? remote.quotes : [],
+      readNotifications: remote.readNotifications && typeof remote.readNotifications === 'object' ? remote.readNotifications : {},
+    }
+    setSettings(nextState.settings)
+    setProducts(nextState.products)
+    setCustomers(nextState.customers)
+    setSales(nextState.sales)
+    setReceipts(nextState.receipts)
+    setDispatches(nextState.dispatches)
+    setSuppliers(nextState.suppliers)
+    setHeldSales(nextState.heldSales)
+    setQuotes(nextState.quotes)
+    setReadNotifications(nextState.readNotifications)
+    setUsers(normalizeUsers(payload.users))
+    setCurrentUserId(payload.user.id)
+    setSessionUserId(payload.user.id)
+    lastSyncedStateRef.current = Object.fromEntries(Object.entries(nextState).map(([key, value]) => [key, JSON.stringify(value)]))
+    setSyncReady(true)
+    setSyncStatus('synced')
+  }
 
   useEffect(() => {
     if (!toast) return
     const timer = setTimeout(() => setToast(null), 3200)
     return () => clearTimeout(timer)
   }, [toast])
+
+  useEffect(() => {
+    if (!syncReady || !authenticatedUser) return
+    const serialized = Object.fromEntries(Object.entries(synchronizedState).map(([key, value]) => [key, JSON.stringify(value)]))
+    const changes = Object.fromEntries(Object.entries(synchronizedState).filter(([key]) => lastSyncedStateRef.current[key] !== serialized[key]))
+    if (!Object.keys(changes).length) return
+    setSyncStatus('saving')
+    const timer = window.setTimeout(async () => {
+      const result = await apiRequest('/api/state', { method: 'PATCH', body: JSON.stringify({ changes }) })
+      if (result.error) {
+        setSyncStatus('error')
+        if (result.status === 401 || result.status === 428) {
+          setSessionUserId(null)
+          setSyncReady(false)
+          return
+        }
+        window.setTimeout(() => setSyncRetry((current) => current + 1), 5000)
+        return
+      }
+      Object.keys(changes).forEach((key) => { lastSyncedStateRef.current[key] = serialized[key] })
+      setSyncStatus('synced')
+    }, 550)
+    return () => window.clearTimeout(timer)
+  }, [settings, products, customers, sales, receipts, dispatches, suppliers, heldSales, quotes, readNotifications, syncReady, authenticatedUser?.id, syncRetry])
 
   useEffect(() => {
     if (!authenticatedUser) return
@@ -388,18 +410,10 @@ function App() {
 
   const notify = (message, tone = 'success') => setToast({ message, tone })
 
-  const establishAuthSession = (user) => {
-    setUsers((current) => current.map((item) => item.id === user.id ? { ...item, lastLoginAt: new Date().toISOString() } : item))
-    setCurrentUserId(user.id)
-    setSessionUserId(user.id)
-  }
-
   const loginWithPassword = async (username, password) => {
-    const normalizedLogin = normalizeUsername(username)
-    const user = users.find((item) => item.active && (getUsername(item) === normalizedLogin || normalizeEmail(item.email) === normalizeEmail(username)))
-    if (!user || !await verifyPassword(password, user)) return { error: 'Usuario o contraseña incorrectos' }
-    if (user.mustChangePassword) return { requiresPasswordChange: true, userId: user.id, name: user.name }
-    establishAuthSession(user)
+    const result = await apiRequest('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
+    if (result.error || result.requiresPasswordChange) return result
+    hydrateRemoteState(result)
     return { success: true }
   }
 
@@ -407,33 +421,52 @@ function App() {
     if (!setupRequired) return { error: 'El acceso inicial ya fue configurado' }
     const validationError = passwordValidationMessage(password)
     if (validationError) return { error: validationError }
-    const normalizedLogin = normalizeUsername(username)
-    const admin = users.find((user) => user.active && user.role === 'Administrador' && (getUsername(user) === normalizedLogin || normalizeEmail(user.email) === normalizeEmail(username)))
-    if (!admin) return { error: 'El usuario no corresponde a un administrador activo' }
-    const credential = await createPasswordCredential(password)
-    const initializedAdmin = { ...admin, ...credential, mustChangePassword: false }
-    setUsers((current) => current.map((user) => user.id === admin.id ? initializedAdmin : user))
-    establishAuthSession(initializedAdmin)
+    const result = await apiRequest('/api/auth/setup', {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        password,
+        name: defaultUsers[0].name,
+        email: defaultUsers[0].email,
+        businessName: settings.business.name,
+        branchName: settings.business.branch,
+        initialState: synchronizedState,
+      }),
+    })
+    if (result.error) return result
+    setAuthStatus((current) => ({ ...current, setupRequired: false, businessName: result.organization?.name || current.businessName, branchName: result.branch?.name || current.branchName }))
+    hydrateRemoteState(result)
     return { success: true }
   }
 
-  const completeInitialPasswordChange = async (userId, password) => {
+  const completeInitialPasswordChange = async (_userId, password) => {
     const validationError = passwordValidationMessage(password)
     if (validationError) return { error: validationError }
-    const user = users.find((item) => item.id === userId && item.active)
-    if (!user) return { error: 'La cuenta ya no se encuentra disponible' }
-    const credential = await createPasswordCredential(password)
-    const updatedUser = { ...user, ...credential, mustChangePassword: false }
-    setUsers((current) => current.map((item) => item.id === user.id ? updatedUser : item))
-    establishAuthSession(updatedUser)
+    const result = await apiRequest('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ password }) })
+    if (result.error) return result
+    hydrateRemoteState(result)
     return { success: true }
   }
 
-  const logout = () => {
+  const logout = async () => {
+    await apiRequest('/api/auth/logout', { method: 'POST' })
     setSessionUserId(null)
+    setSyncReady(false)
+    setSyncStatus('idle')
+    lastSyncedStateRef.current = {}
     setAccountOpen(false)
     setNotificationOpen(false)
     setSidebarOpen(false)
+  }
+
+  const saveRemoteUser = async (user) => {
+    const result = await apiRequest(user.id ? `/api/users/${user.id}` : '/api/users', {
+      method: user.id ? 'PATCH' : 'POST',
+      body: JSON.stringify(user),
+    })
+    if (result.error) return result
+    setUsers(normalizeUsers(result.users))
+    return { success: true }
   }
 
   const viewTitle = activeView === 'settings' ? 'Configuración' : navItems.find((item) => item.id === activeView)?.label || settings.business.name
@@ -568,10 +601,14 @@ function App() {
     [currentUser.id]: [...new Set([...(current[currentUser.id] || []), ...notifications.map((item) => item.id)])],
   }))
 
+  if (authStatus.loading || authStatus.error) {
+    return <ConnectionScreen error={authStatus.error} onRetry={() => setAuthStatusAttempt((current) => current + 1)} />
+  }
+
   if (!authenticatedUser) {
     return <LoginScreen
-      businessName={settings.business.name}
-      branchName={settings.business.branch}
+      businessName={authStatus.businessName}
+      branchName={authStatus.branchName}
       setupRequired={setupRequired}
       initialUsername={initialAdminUsername}
       onLogin={loginWithPassword}
@@ -582,7 +619,7 @@ function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar activeView={activeView} navigate={navigate} open={sidebarOpen} onClose={() => setSidebarOpen(false)} settings={settings} products={products} currentUser={currentUser} />
+      <Sidebar activeView={activeView} navigate={navigate} open={sidebarOpen} onClose={() => setSidebarOpen(false)} settings={settings} products={products} currentUser={currentUser} syncStatus={syncStatus} />
 
       <div className="app-main">
         <header className="topbar">
@@ -596,6 +633,10 @@ function App() {
             </div>
           </div>
           <div className="topbar-actions">
+            <span className={`sync-indicator ${syncStatus}`} title={syncStatus === 'error' ? 'No fue posible sincronizar con Neon' : 'Persistencia remota activa'}>
+              <Globe2 size={15} />
+              <span>{syncStatus === 'saving' ? 'Guardando…' : syncStatus === 'error' ? 'Sin conexión' : 'Neon sincronizado'}</span>
+            </span>
             <div className={`header-search ${globalSearchOpen ? 'open' : ''}`} ref={globalSearchRef}>
               <Search size={17} />
               <input ref={globalSearchInputRef} value={globalQuery} onChange={(event) => { setGlobalQuery(event.target.value); setGlobalSearchOpen(true) }} onFocus={() => setGlobalSearchOpen(true)} onKeyDown={handleGlobalSearchKeyDown} placeholder="Buscar producto o documento" aria-label="Buscar producto o documento" autoComplete="off" />
@@ -654,7 +695,7 @@ function App() {
           {activeView === 'customers' && <Customers customers={customers} sales={sales} />}
           {activeView === 'suppliers' && <Suppliers suppliers={suppliers} setSuppliers={setSuppliers} notify={notify} currentUser={currentUser} />}
           {activeView === 'reports' && <Reports products={products} sales={sales} notify={notify} settings={settings} can={can} initialQuery={moduleSearch.view === 'reports' ? moduleSearch.query : ''} />}
-          {activeView === 'settings' && <Configuration settings={settings} setSettings={setSettings} products={products} setProducts={setProducts} customers={customers} setCustomers={setCustomers} sales={sales} setSales={setSales} receipts={receipts} setReceipts={setReceipts} dispatches={dispatches} setDispatches={setDispatches} suppliers={suppliers} setSuppliers={setSuppliers} heldSales={heldSales} setHeldSales={setHeldSales} quotes={quotes} setQuotes={setQuotes} users={users} setUsers={setUsers} currentUser={currentUser} setCurrentUserId={setCurrentUserId} readNotifications={readNotifications} setReadNotifications={setReadNotifications} initialSection={settingsSection} onSectionChange={setSettingsSection} notify={notify} />}
+          {activeView === 'settings' && <Configuration settings={settings} setSettings={setSettings} products={products} setProducts={setProducts} customers={customers} setCustomers={setCustomers} sales={sales} setSales={setSales} receipts={receipts} setReceipts={setReceipts} dispatches={dispatches} setDispatches={setDispatches} suppliers={suppliers} setSuppliers={setSuppliers} heldSales={heldSales} setHeldSales={setHeldSales} quotes={quotes} setQuotes={setQuotes} users={users} currentUser={currentUser} readNotifications={readNotifications} setReadNotifications={setReadNotifications} initialSection={settingsSection} onSectionChange={setSettingsSection} notify={notify} onSaveUser={saveRemoteUser} />}
         </main>
       </div>
 
@@ -668,6 +709,19 @@ function App() {
 
       {toast && <div className={`toast ${toast.tone}`}><Check size={18} /><span>{toast.message}</span></div>}
     </div>
+  )
+}
+
+function ConnectionScreen({ error, onRetry }) {
+  return (
+    <main className="connection-page">
+      <section className={`connection-card ${error ? 'error' : ''}`}>
+        <span><Globe2 size={25} /></span>
+        <h1>{error ? 'No pudimos conectar con Neon' : 'Conectando con Neon'}</h1>
+        <p>{error || 'Estamos preparando los datos del ERP.'}</p>
+        {error ? <button type="button" className="login-submit" onClick={onRetry}>Reintentar conexión<ArrowRight size={18} /></button> : <i className="connection-loader" />}
+      </section>
+    </main>
   )
 }
 
@@ -742,13 +796,13 @@ function LoginScreen({ businessName, branchName, setupRequired, initialUsername,
           <button className="login-submit" disabled={submitting}>{submitting ? 'Validando acceso...' : setupRequired ? 'Configurar e ingresar' : pendingUser ? 'Guardar e ingresar' : 'Ingresar'}<ArrowRight size={18} /></button>
           {!setupRequired && !pendingUser && <p className="login-help">Si olvidaste tu contraseña, solicita al administrador que restablezca tu acceso.</p>}
         </form>
-        <footer><span>{businessName}</span><small>Acceso local · {branchName}</small></footer>
+        <footer><span>{businessName}</span><small>Datos en Neon · {branchName}</small></footer>
       </section>
     </main>
   )
 }
 
-function Sidebar({ activeView, navigate, open, onClose, settings, products, currentUser }) {
+function Sidebar({ activeView, navigate, open, onClose, settings, products, currentUser, syncStatus }) {
   return (
     <>
       {open && <button className="sidebar-backdrop" onClick={onClose} aria-label="Cerrar menú" />}
@@ -783,7 +837,7 @@ function Sidebar({ activeView, navigate, open, onClose, settings, products, curr
 
         <div className="sidebar-footer">
           {userCan(currentUser, 'settings') && <button className={activeView === 'settings' ? 'active' : ''} onClick={() => navigate('settings')}><Settings size={18} /><span>Configuración</span></button>}
-          <div className="sync-state"><span /><small>Sistema sincronizado</small></div>
+          <div className={`sync-state ${syncStatus}`}><span /><small>{syncStatus === 'saving' ? 'Guardando en Neon' : syncStatus === 'error' ? 'Sin conexión a Neon' : 'Neon sincronizado'}</small></div>
         </div>
       </aside>
     </>
@@ -999,8 +1053,8 @@ function PointOfSale({ products, setProducts, customers, sales, setSales, heldSa
     const now = new Date()
     const validUntil = new Date(now)
     validUntil.setDate(validUntil.getDate() + Number(settings.documents.quoteValidityDays || 15))
-    const storedSequence = Number(localStorage.getItem('mf-quote-sequence')) || 0
-    const sequence = Math.max(Number(settings.documents.quoteSequence) || 1, storedSequence + 1)
+    const highestSequence = quotes.reduce((highest, current) => Math.max(highest, Number(current.sequence) || Number(current.id.replace(/\D/g, '')) || 0), 0)
+    const sequence = Math.max(Number(settings.documents.quoteSequence) || 1, highestSequence + 1)
     const generatedQuote = {
       id: `COT-${String(sequence).padStart(6, '0')}`,
       sequence,
@@ -1015,7 +1069,6 @@ function PointOfSale({ products, setProducts, customers, sales, setSales, heldSa
       total: subtotal,
       lines: cart.map(({ id, sku, name, price, qty }) => ({ id, sku, name, price, qty })),
     }
-    localStorage.setItem('mf-quote-sequence', String(sequence))
     setSettings((current) => ({ ...current, documents: { ...current.documents, quoteSequence: sequence + 1 } }))
     setQuotes((current) => [generatedQuote, ...current].slice(0, 100))
     setQuote(generatedQuote)
@@ -1025,8 +1078,7 @@ function PointOfSale({ products, setProducts, customers, sales, setSales, heldSa
     if (!cart.length) return
     const now = new Date()
     const highestSequence = heldSales.reduce((highest, sale) => Math.max(highest, Number(sale.id.replace(/\D/g, '')) || 0), 0)
-    const storedSequence = Number(localStorage.getItem('mf-held-sale-sequence')) || 0
-    const sequence = Math.max(highestSequence, storedSequence) + 1
+    const sequence = Math.max(highestSequence + 1, Number(settings.documents.heldSaleSequence) || 1)
     const heldSale = {
       id: `ESP-${String(sequence).padStart(3, '0')}`,
       date: now.toLocaleDateString('es-CL', { day: '2-digit', month: 'short', year: 'numeric' }).replace('.', ''),
@@ -1039,7 +1091,7 @@ function PointOfSale({ products, setProducts, customers, sales, setSales, heldSa
       items: cart.reduce((sum, item) => sum + item.qty, 0),
       total: subtotal,
     }
-    localStorage.setItem('mf-held-sale-sequence', String(sequence))
+    setSettings((current) => ({ ...current, documents: { ...current.documents, heldSaleSequence: sequence + 1 } }))
     setHeldSales((current) => [heldSale, ...current])
     setCart([])
     setCustomer('Público general')
@@ -1067,9 +1119,6 @@ function PointOfSale({ products, setProducts, customers, sales, setSales, heldSa
   }
 
   const deleteHeldSale = (id) => {
-    const deletedSequence = Number(id.replace(/\D/g, '')) || 0
-    const storedSequence = Number(localStorage.getItem('mf-held-sale-sequence')) || 0
-    if (deletedSequence > storedSequence) localStorage.setItem('mf-held-sale-sequence', String(deletedSequence))
     setHeldSales((current) => current.filter((sale) => sale.id !== id))
     notify(`Venta ${id} eliminada`)
   }
@@ -1964,7 +2013,7 @@ function Reports({ products, sales, notify, settings, can, initialQuery = '' }) 
   )
 }
 
-function Configuration({ settings, setSettings, products, setProducts, customers, setCustomers, sales, setSales, receipts, setReceipts, dispatches, setDispatches, suppliers, setSuppliers, heldSales, setHeldSales, quotes, setQuotes, users, setUsers, currentUser, setCurrentUserId, readNotifications, setReadNotifications, initialSection, onSectionChange, notify }) {
+function Configuration({ settings, setSettings, products, setProducts, customers, setCustomers, sales, setSales, receipts, setReceipts, dispatches, setDispatches, suppliers, setSuppliers, heldSales, setHeldSales, quotes, setQuotes, users, currentUser, readNotifications, setReadNotifications, initialSection, onSectionChange, notify, onSaveUser }) {
   const [section, setSection] = useState(initialSection)
   const [draft, setDraft] = useState(settings)
   const [confirmReset, setConfirmReset] = useState(false)
@@ -2074,7 +2123,7 @@ function Configuration({ settings, setSettings, products, setProducts, customers
       notify('El usuario activo debe conservar acceso a usuarios y configuración', 'warning')
       return
     }
-    const needsPassword = !userDraft.id || !userDraft.passwordHash
+    const needsPassword = !userDraft.id || !userDraft.hasPassword
     if (needsPassword && !userDraft.password) {
       notify('Debes definir una contraseña inicial', 'warning')
       return
@@ -2091,26 +2140,22 @@ function Configuration({ settings, setSettings, products, setProducts, customers
       }
     }
     setUserSaving(true)
-    let credential = {}
-    try {
-      if (userDraft.password) credential = await createPasswordCredential(userDraft.password)
-    } catch {
-      notify('No fue posible proteger la contraseña en este navegador', 'warning')
-      setUserSaving(false)
-      return
-    }
-    const { password, passwordConfirm, showPassword, ...userData } = userDraft
     const savedUser = {
-      ...userData,
-      ...credential,
-      id: userDraft.id || Math.max(0, ...users.map((user) => Number(user.id) || 0)) + 1,
+      id: userDraft.id,
       username: normalizedDraftUsername,
       name: userDraft.name.trim(),
       email: userDraft.email.trim().toLowerCase(),
-      mustChangePassword: userDraft.password ? userDraft.id !== currentUser.id : Boolean(userDraft.mustChangePassword),
+      password: userDraft.password,
+      role: userDraft.role,
+      active: userDraft.active,
+      permissions: userDraft.permissions,
     }
-    setUsers((current) => userDraft.id ? current.map((user) => user.id === userDraft.id ? savedUser : user) : [...current, savedUser])
+    const result = await onSaveUser(savedUser)
     setUserSaving(false)
+    if (result?.error) {
+      notify(result.error, 'warning')
+      return
+    }
     setUserDraft(null)
     notify(userDraft.id ? 'Usuario actualizado correctamente' : 'Usuario creado correctamente')
   }
@@ -2120,7 +2165,7 @@ function Configuration({ settings, setSettings, products, setProducts, customers
       version: 2,
       exportedAt: new Date().toISOString(),
       store: settings.business.name,
-      data: { settings, products, customers, sales, receipts, dispatches, suppliers, heldSales, quotes, users, currentUserId: currentUser.id, readNotifications },
+      data: { settings, products, customers, sales, receipts, dispatches, suppliers, heldSales, quotes, readNotifications },
     }
     const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }))
     const link = document.createElement('a')
@@ -2151,11 +2196,7 @@ function Configuration({ settings, setSettings, products, setProducts, customers
       setSuppliers(Array.isArray(data.suppliers) ? data.suppliers : [])
       setHeldSales(Array.isArray(data.heldSales) ? data.heldSales : [])
       setQuotes(restoredQuotes)
-      const restoredUsers = Array.isArray(data.users) && data.users.length ? data.users : defaultUsers
-      setUsers(normalizeUsers(restoredUsers))
-      setCurrentUserId(restoredUsers.some((user) => user.id === data.currentUserId && user.active) ? data.currentUserId : restoredUsers.find((user) => user.active)?.id || 1)
       setReadNotifications(data.readNotifications && typeof data.readNotifications === 'object' ? data.readNotifications : {})
-      localStorage.setItem('mf-quote-sequence', String(Math.max(0, ...restoredQuotes.map((quote) => Number(quote.sequence) || 0))))
       notify('Respaldo restaurado correctamente')
     } catch {
       notify('El archivo no corresponde a un respaldo válido', 'warning')
@@ -2173,12 +2214,7 @@ function Configuration({ settings, setSettings, products, setProducts, customers
     setSuppliers(defaultSuppliers)
     setHeldSales(defaultHeldSales)
     setQuotes([])
-    const preservedAdmin = { ...currentUser, role: 'Administrador', active: true, permissions: [...rolePermissions.Administrador], mustChangePassword: false }
-    setUsers([preservedAdmin])
-    setCurrentUserId(preservedAdmin.id)
     setReadNotifications({})
-    localStorage.removeItem('mf-quote-sequence')
-    localStorage.removeItem('mf-held-sale-sequence')
     setConfirmReset(false)
     notify('ERP restablecido sin datos operativos')
   }
@@ -2277,7 +2313,7 @@ function Configuration({ settings, setSettings, products, setProducts, customers
             <div className="users-list">
               <div className="users-list-head"><span>Usuario</span><span>Rol</span><span>Estado</span><span /></div>
               {users.map((user) => <div className="user-row" key={user.id}>
-                <span className="user-identity"><i className={`avatar ${user.active ? '' : 'inactive'}`}>{userInitials(user.name)}</i><span><strong>{user.name}</strong><small>@{getUsername(user)} · {user.email}{user.id === currentUser.id ? ' · Usuario activo' : ''}{!user.passwordHash ? ' · Sin contraseña' : user.mustChangePassword ? ' · Cambio pendiente' : ''}</small></span></span>
+                <span className="user-identity"><i className={`avatar ${user.active ? '' : 'inactive'}`}>{userInitials(user.name)}</i><span><strong>{user.name}</strong><small>@{getUsername(user)} · {user.email}{user.id === currentUser.id ? ' · Usuario activo' : ''}{!user.hasPassword ? ' · Sin contraseña' : user.mustChangePassword ? ' · Cambio pendiente' : ''}</small></span></span>
                 <span className="role-badge">{user.role}</span>
                 <span className={`user-status ${user.active ? 'active' : ''}`}><i />{user.active ? 'Activo' : 'Bloqueado'}</span>
                 <button type="button" className="row-action" onClick={() => openUserForm(user)}><Pencil size={14} />Editar</button>
@@ -2288,7 +2324,7 @@ function Configuration({ settings, setSettings, products, setProducts, customers
           {section === 'initial-load' && <InitialLoadPanel products={products} setProducts={setProducts} customers={customers} setCustomers={setCustomers} suppliers={suppliers} setSuppliers={setSuppliers} setSettings={setSettings} notify={notify} />}
 
           {section === 'backup' && <>
-            <SettingsHeading icon={Box} title="Respaldo y restauración" text="Protege la información almacenada en este equipo." />
+            <SettingsHeading icon={Box} title="Respaldo y restauración" text="Exporta o restaura la información sincronizada con Neon." />
             <div className="backup-summary">
               <div><span>Productos</span><strong>{number.format(products.length)}</strong></div>
               <div><span>Ventas</span><strong>{number.format(sales.length)}</strong></div>
@@ -2315,7 +2351,7 @@ function Configuration({ settings, setSettings, products, setProducts, customers
             <label>Nombre de usuario<input value={userDraft.username} onChange={(event) => setUserDraft((current) => ({ ...current, username: event.target.value }))} required autoComplete="off" placeholder="nombre.usuario" /><small>Se utilizará para iniciar sesión</small></label>
             <label>Nombre completo<input value={userDraft.name} onChange={(event) => setUserDraft((current) => ({ ...current, name: event.target.value }))} required /></label>
             <label>Correo electrónico<input type="email" value={userDraft.email} onChange={(event) => setUserDraft((current) => ({ ...current, email: event.target.value }))} required /></label>
-            <label>{userDraft.id ? 'Nueva contraseña' : 'Contraseña inicial'}<span className="password-input"><input type={userDraft.showPassword ? 'text' : 'password'} value={userDraft.password} onChange={(event) => setUserDraft((current) => ({ ...current, password: event.target.value }))} required={!userDraft.id || !userDraft.passwordHash} autoComplete="new-password" placeholder={userDraft.id ? 'Dejar en blanco para conservar' : 'Mínimo 8 caracteres'} /><button type="button" onClick={() => setUserDraft((current) => ({ ...current, showPassword: !current.showPassword }))} aria-label={userDraft.showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{userDraft.showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></span><small>Mayúscula, minúscula y número</small></label>
+            <label>{userDraft.id ? 'Nueva contraseña' : 'Contraseña inicial'}<span className="password-input"><input type={userDraft.showPassword ? 'text' : 'password'} value={userDraft.password} onChange={(event) => setUserDraft((current) => ({ ...current, password: event.target.value }))} required={!userDraft.id || !userDraft.hasPassword} autoComplete="new-password" placeholder={userDraft.id ? 'Dejar en blanco para conservar' : 'Mínimo 8 caracteres'} /><button type="button" onClick={() => setUserDraft((current) => ({ ...current, showPassword: !current.showPassword }))} aria-label={userDraft.showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{userDraft.showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></span><small>Mayúscula, minúscula y número</small></label>
             <label>Confirmar contraseña<input type={userDraft.showPassword ? 'text' : 'password'} value={userDraft.passwordConfirm} onChange={(event) => setUserDraft((current) => ({ ...current, passwordConfirm: event.target.value }))} required={Boolean(userDraft.password)} autoComplete="new-password" placeholder="Repite la contraseña" /></label>
             <label>Rol<select value={userDraft.role} onChange={(event) => updateUserRole(event.target.value)}>{Object.keys(rolePermissions).map((role) => <option key={role}>{role}</option>)}</select></label>
             <label className="user-active-field"><span>Estado de acceso</span><span className="inline-switch"><input type="checkbox" checked={userDraft.active} disabled={userDraft.id === currentUser.id} onChange={(event) => setUserDraft((current) => ({ ...current, active: event.target.checked }))} /><i /><strong>{userDraft.active ? 'Activo' : 'Bloqueado'}</strong></span></label>

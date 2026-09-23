@@ -4,16 +4,20 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
+    "dev": "node server/index.mjs",
+    "dev:frontend": "vite --host 0.0.0.0",
+    "start": "node server/index.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "db:validate": "node scripts/validate-neon-schema.mjs",
     "db:migrate": "node scripts/neon-db.mjs migrate",
-    "db:verify": "node scripts/neon-db.mjs verify"
+    "db:verify": "node scripts/neon-db.mjs verify",
+    "api:validate": "node scripts/validate-neon-api.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "bcryptjs": "^3.0.3",
+    "express": "^5.2.1",
     "lucide-react": "latest",
     "pg": "^8.23.0",
     "react": "latest",

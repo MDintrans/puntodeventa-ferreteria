@@ -110,6 +110,7 @@ const expectedTables = [
   'dispatch_items',
   'dispatches',
   'document_sequences',
+  'erp_state_snapshots',
   'held_sale_items',
   'held_sales',
   'import_batch_errors',

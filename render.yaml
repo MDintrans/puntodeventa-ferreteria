@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: puntodeventa-ferreteria
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build && npm run db:migrate
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: SESSION_HOURS
+        value: "12"
+      - key: DATABASE_URL
+        sync: false

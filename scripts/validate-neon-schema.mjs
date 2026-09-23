@@ -1,14 +1,16 @@
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import assert from 'node:assert/strict'
 import { PGlite } from '@electric-sql/pglite'
 
-const migrationPath = resolve(import.meta.dirname, '..', 'neon', 'migrations', '202609220001_initial_erp.sql')
-const migration = await readFile(migrationPath, 'utf8')
+const migrationsDirectory = resolve(import.meta.dirname, '..', 'neon', 'migrations')
+const migrationFiles = (await readdir(migrationsDirectory)).filter((file) => file.endsWith('.sql')).sort()
 const database = await PGlite.create()
 
 try {
-  await database.exec(migration)
+  for (const migrationFile of migrationFiles) {
+    await database.exec(await readFile(resolve(migrationsDirectory, migrationFile), 'utf8'))
+  }
 
   const tables = await database.query(`
     select table_name
@@ -26,9 +28,18 @@ try {
     where table_schema = 'public'
   `)
 
-  assert.equal(tables.rows.length, 33, 'La migración debe crear 33 tablas ERP')
+  assert.equal(tables.rows.length, 34, 'Las migraciones deben crear 34 tablas ERP')
   assert.equal(functions.rows.length, 6, 'La migración debe crear 6 funciones')
   assert.equal(views.rows.length, 2, 'La migración debe crear 2 vistas')
+
+  const syncColumns = await database.query(`
+    select column_name
+    from information_schema.columns
+    where table_schema = 'public'
+      and ((table_name = 'app_users' and column_name = 'must_change_password')
+        or (table_name = 'organization_members' and column_name = 'permissions'))
+  `)
+  assert.equal(syncColumns.rows.length, 2, 'La migración de sincronización debe agregar metadatos de acceso')
 
   const user = await database.query(`
     insert into public.app_users (username, full_name, password_hash)
@@ -91,7 +102,8 @@ try {
   assert.equal(remainingOrganizations.rows[0].count, 0)
 
   console.log('OK sintaxis PostgreSQL y relaciones')
-  console.log('OK 33 tablas, 6 funciones y 2 vistas')
+  console.log('OK 34 tablas, 6 funciones y 2 vistas')
+  console.log(`OK ${migrationFiles.length} migraciones aplicadas en orden`)
   console.log('OK bootstrap vacío, control de roles y ajuste de inventario')
 } finally {
   await database.close()
