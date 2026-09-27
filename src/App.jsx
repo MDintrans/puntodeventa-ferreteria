@@ -1702,7 +1702,35 @@ function Dispatches({ products, customers, dispatches, notify, settings, onCreat
   const [dispatchSaving, setDispatchSaving] = useState(false)
   const [advancingId, setAdvancingId] = useState(null)
   const dispatchOperationRef = useRef(null)
+  const dispatchBoardRef = useRef(null)
   const availableProducts = products.filter((product) => product.active !== false && (!settings.inventory.preventNegative || product.stock > 0))
+
+  useEffect(() => {
+    const board = dispatchBoardRef.current
+    if (!board) return undefined
+
+    const updateScrollLimits = () => {
+      board.querySelectorAll('.dispatch-items').forEach((list) => {
+        list.style.removeProperty('--dispatch-list-max-height')
+        const cards = [...list.querySelectorAll(':scope > .dispatch-card')]
+        if (cards.length <= 2) return
+        const gap = Number.parseFloat(window.getComputedStyle(list).rowGap) || 0
+        const visibleHeight = cards.slice(0, 2).reduce((total, card) => total + card.getBoundingClientRect().height, 0) + gap
+        list.style.setProperty('--dispatch-list-max-height', `${Math.ceil(visibleHeight)}px`)
+      })
+    }
+
+    const frame = window.requestAnimationFrame(updateScrollLimits)
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateScrollLimits)
+    board.querySelectorAll('.dispatch-card').forEach((card) => resizeObserver?.observe(card))
+    window.addEventListener('resize', updateScrollLimits)
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+      resizeObserver?.disconnect()
+      window.removeEventListener('resize', updateScrollLimits)
+    }
+  }, [dispatches])
 
   const closeDispatchForm = () => {
     setShowForm(false)
@@ -1774,12 +1802,13 @@ function Dispatches({ products, customers, dispatches, notify, settings, onCreat
   return (
     <div className="module-page">
       <div className="module-toolbar"><div><h2>Despachos</h2><p>Prepara, controla y entrega pedidos de clientes.</p></div><button className="primary-button" onClick={() => setShowForm(true)}><Plus size={18} />Nuevo despacho</button></div>
-      <section className="dispatch-board">
+      <section className="dispatch-board" ref={dispatchBoardRef}>
         {['Preparando', 'Despachado', 'Entregado'].map((status, index) => {
           const Icon = [ClipboardCheck, Truck, PackageCheck][index]
           const items = dispatches.filter((item) => item.status === status)
+          const hasScroll = items.length > 2
           return <div className="dispatch-column" key={status}><div className="column-title"><span><Icon size={18} /></span><strong>{status}</strong><em>{items.length}</em></div>
-            <div className="dispatch-items">{items.length ? items.map((item) => <div className={`dispatch-card ${item.id === highlightId ? 'search-highlight' : ''}`} key={item.id}><div><strong>{item.id}</strong><span className={`status-dot s${index}`} /></div><h4>{item.customer}</h4><p>{item.order}</p>{(item.address || item.contact) && <div className="dispatch-delivery">{item.address && <span><MapPin size={13} />{item.address}</span>}{item.contact && <span><Phone size={13} />{item.contact}</span>}</div>}<div className="dispatch-meta"><span><Box size={14} />{item.units} unidades</span><span><Clock3 size={14} />{item.date}</span></div><span className="dispatch-owner"><UserRound size={13} />{item.responsible || 'Matías Dintrans'}</span>{index < 2 && <button disabled={advancingId === item.dbId} onClick={() => advance(item)}>{advancingId === item.dbId ? 'Actualizando...' : index === 0 ? 'Marcar despachado' : 'Confirmar entrega'}<ArrowRight size={15} /></button>}</div>) : <div className="column-empty">Sin pedidos en esta etapa</div>}</div>
+            <div className={`dispatch-items ${hasScroll ? 'is-scrollable' : ''}`} tabIndex={hasScroll ? 0 : undefined} aria-label={hasScroll ? `Lista de despachos: ${status}` : undefined}>{items.length ? items.map((item) => <div className={`dispatch-card ${item.id === highlightId ? 'search-highlight' : ''}`} key={item.id}><div><strong>{item.id}</strong><span className={`status-dot s${index}`} /></div><h4>{item.customer}</h4><p>{item.order}</p>{(item.address || item.contact) && <div className="dispatch-delivery">{item.address && <span><MapPin size={13} />{item.address}</span>}{item.contact && <span><Phone size={13} />{item.contact}</span>}</div>}<div className="dispatch-meta"><span><Box size={14} />{item.units} unidades</span><span><Clock3 size={14} />{item.date}</span></div><span className="dispatch-owner"><UserRound size={13} />{item.responsible || 'Matías Dintrans'}</span>{index < 2 && <button disabled={advancingId === item.dbId} onClick={() => advance(item)}>{advancingId === item.dbId ? 'Actualizando...' : index === 0 ? 'Marcar despachado' : 'Confirmar entrega'}<ArrowRight size={15} /></button>}</div>) : <div className="column-empty">Sin pedidos en esta etapa</div>}</div>
           </div>
         })}
       </section>
