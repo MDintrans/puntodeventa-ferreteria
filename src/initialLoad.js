@@ -1,7 +1,7 @@
 const headerCell = (value) => ({
   value,
   fontWeight: 'bold',
-  backgroundColor: '#0f5f5a',
+  backgroundColor: '#1d4f91',
   textColor: '#ffffff',
   align: 'center',
 })
@@ -10,7 +10,7 @@ const instructionTitle = (value) => ({
   value,
   fontWeight: 'bold',
   fontSize: 16,
-  textColor: '#163f3b',
+  textColor: '#172451',
 })
 
 export const initialLoadTemplates = [
@@ -85,7 +85,7 @@ const makeInstructionSheet = (templates) => ({
     [{ value: 'Montos', fontWeight: 'bold' }, 'Ingrese números sin símbolo $ ni separadores de miles.'],
     [],
     ...templates.flatMap((template) => [
-      [{ value: template.label, fontWeight: 'bold', textColor: '#0f5f5a' }, `Clave: ${template.keyLabel}. Obligatorios: ${template.required.join(', ')}. Columnas: ${template.headers.join(', ')}`],
+      [{ value: template.label, fontWeight: 'bold', textColor: '#1d4f91' }, `Clave: ${template.keyLabel}. Obligatorios: ${template.required.join(', ')}. Columnas: ${template.headers.join(', ')}`],
       ['Ejemplo', template.example],
     ]),
   ],

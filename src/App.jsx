@@ -2061,7 +2061,7 @@ function Reports({ products, sales, notify, settings, can, initialQuery = '' }) 
     setExporting(true)
     try {
       const { default: writeExcelFile } = await import('write-excel-file/browser')
-      const headerCell = (value) => ({ value, fontWeight: 'bold', textColor: '#FFFFFF', backgroundColor: '#0F766E', align: 'center' })
+      const headerCell = (value) => ({ value, fontWeight: 'bold', textColor: '#FFFFFF', backgroundColor: '#1D4F91', align: 'center' })
       const rows = [
         [{ value: settings.business.name, fontWeight: 'bold', fontSize: 16, columnSpan: 8 }],
         [{ value: `Reporte de ventas · ${periodLabel}`, fontWeight: 'bold', textColor: '#53615E', columnSpan: 8 }],
@@ -2087,7 +2087,7 @@ function Reports({ products, sales, notify, settings, can, initialQuery = '' }) 
           { value: '' },
           { value: '' },
           { value: totalItems, type: Number, fontWeight: 'bold', align: 'center' },
-          { value: totalSales, type: Number, format: '[$$-es-CL]#,##0', fontWeight: 'bold', backgroundColor: '#E5F3F1', align: 'right' },
+          { value: totalSales, type: Number, format: '[$$-es-CL]#,##0', fontWeight: 'bold', backgroundColor: '#E8EFF8', align: 'right' },
         ],
       ]
       const filePeriod = periodLabel.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-')
