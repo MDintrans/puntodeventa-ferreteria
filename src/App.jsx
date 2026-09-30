@@ -2175,7 +2175,7 @@ function Reports({ products, sales, notify, settings, can, initialQuery = '' }) 
 
       <section className="data-panel sales-report-table">
         <div className="panel-heading table-title"><div><span className="eyebrow">Detalle</span><h3>Ventas realizadas</h3></div><span className="table-result-count">{filteredSales.length} resultados</span></div>
-        <div className="table-scroll"><table><thead><tr><th>Folio</th><th>Fecha</th><th>Hora</th><th>Cliente</th><th>Vendedor</th><th>Medio de pago</th><th>Artículos</th><th>Total</th></tr></thead><tbody>
+        <div className={`table-scroll report-sales-scroll${filteredSales.length > 10 ? ' is-scrollable' : ''}`} tabIndex={filteredSales.length > 10 ? 0 : undefined} aria-label="Detalle de ventas realizadas"><table><thead><tr><th>Folio</th><th>Fecha</th><th>Hora</th><th>Cliente</th><th>Vendedor</th><th>Medio de pago</th><th>Artículos</th><th>Total</th></tr></thead><tbody>
           {filteredSales.length ? filteredSales.map((sale) => <tr key={sale.id}><td><strong className="sale-folio">{sale.id}</strong></td><td>{new Date(`${sale.date}T12:00:00`).toLocaleDateString('es-CL')}</td><td>{sale.time}</td><td><strong>{sale.customer}</strong></td><td>{sale.seller}</td><td><span className="payment-badge">{sale.payment}</span></td><td>{sale.items}</td><td><strong>{money.format(sale.total)}</strong></td></tr>) : <tr><td colSpan="8"><EmptyState icon={Search} title="No encontramos ventas" text="Cambia el período o los filtros de búsqueda." /></td></tr>}
         </tbody></table></div>
         <div className="report-table-total"><span>Total filtrado</span><strong>{money.format(totalSales)}</strong></div>
