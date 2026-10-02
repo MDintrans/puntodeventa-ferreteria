@@ -6,6 +6,7 @@ process.env.NODE_ENV = 'production'
 
 const {
   advanceDispatchTransaction,
+  completeDispatchTransaction,
   completeSaleTransaction,
   createDispatchTransaction,
   pool,
@@ -141,9 +142,15 @@ try {
   const delivered = await pool.query('select status from public.dispatches where id = $1', [dispatch.dispatchId])
   assert.equal(delivered.rows[0].status, 'delivered')
 
+  const completion = await completeDispatchTransaction(auth, dispatch.dispatchId)
+  const completed = await pool.query('select completed_at from public.dispatches where id = $1', [dispatch.dispatchId])
+  assert.ok(completed.rows[0].completed_at, 'El despacho completado conserva su registro archivado')
+  assert.ok(!completion.dispatches.some((item) => item.dbId === dispatch.dispatchId), 'El despacho completado desaparece del tablero')
+
   console.log('OK dos cajas compiten por stock sin sobreventa')
   console.log('OK ventas, ingresos y despachos son idempotentes')
   console.log('OK reservas y cambios de estado conservan el inventario')
+  console.log('OK los despachos completados se archivan fuera del tablero')
 } finally {
   if (organizationId) await pool.query('delete from public.organizations where id = $1', [organizationId]).catch(() => {})
   if (userId) await pool.query('delete from public.app_users where id = $1', [userId]).catch(() => {})

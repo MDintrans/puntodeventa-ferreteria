@@ -244,7 +244,7 @@ const listDispatches = async (database, organizationId, branchId, limit = 500) =
     left join lateral (
       select sum(quantity) as quantity from public.dispatch_items where dispatch_id = dispatch.id
     ) items on true
-    where dispatch.organization_id = $1 and dispatch.branch_id = $2
+    where dispatch.organization_id = $1 and dispatch.branch_id = $2 and dispatch.completed_at is null
     order by dispatch.created_at desc
     limit $3
   `, [organizationId, branchId, limit])
@@ -817,6 +817,24 @@ const advanceDispatchTransaction = async (auth, dispatchId, expectedStatus) => {
   }
 }
 
+const completeDispatchTransaction = async (auth, dispatchId) => {
+  if (!uuidPattern.test(dispatchId)) throw operationError('Despacho inválido.')
+  await withTransaction(async (client) => {
+    const current = await client.query(`
+      select id, status, completed_at from public.dispatches
+      where id = $1 and organization_id = $2 and branch_id = $3
+      for update
+    `, [dispatchId, auth.organization_id, auth.branch_id])
+    if (!current.rowCount) throw operationError('El despacho no existe.', 404)
+    if (current.rows[0].completed_at) return
+    if (current.rows[0].status !== 'delivered') throw operationError('Solo se pueden completar despachos entregados.', 409)
+    await client.query('update public.dispatches set completed_at = now(), updated_at = now() where id = $1', [dispatchId])
+  })
+  return {
+    dispatches: await listDispatches(pool, auth.organization_id, auth.branch_id),
+  }
+}
+
 app.get('/api/health', asyncRoute(async (_request, response) => {
   await pool.query('select 1')
   response.json({ ok: true, database: 'connected' })
@@ -1045,6 +1063,10 @@ app.patch('/api/dispatches/:id/advance', requireSession(), requirePermission('di
   response.json(await advanceDispatchTransaction(request.auth, request.params.id, request.body?.expectedStatus))
 }))
 
+app.patch('/api/dispatches/:id/complete', requireSession(), requirePermission('dispatches'), asyncRoute(async (request, response) => {
+  response.json(await completeDispatchTransaction(request.auth, request.params.id))
+}))
+
 app.post('/api/cash-registers', requireSession(), requireUserAdmin, asyncRoute(async (request, response) => {
   const name = String(request.body?.name || '').trim()
   const requestedCode = String(request.body?.code || '').trim().toUpperCase()
@@ -1181,6 +1203,7 @@ export {
   app,
   advanceDispatchTransaction,
   completeSaleTransaction,
+  completeDispatchTransaction,
   createDispatchTransaction,
   listCashRegisters,
   listDispatches,

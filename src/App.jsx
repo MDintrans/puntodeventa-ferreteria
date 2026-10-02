@@ -581,6 +581,13 @@ function App() {
     return result
   }
 
+  const completeRemoteDispatch = async (dispatchId) => {
+    const result = await apiRequest(`/api/dispatches/${dispatchId}/complete`, { method: 'PATCH' })
+    if (result.error) return result
+    setDispatches(result.dispatches)
+    return result
+  }
+
   const createCashRegister = async (register) => {
     const result = await apiRequest('/api/cash-registers', { method: 'POST', body: JSON.stringify(register) })
     if (result.error) return result
@@ -740,7 +747,7 @@ function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar activeView={activeView} navigate={navigate} open={sidebarOpen} onClose={() => setSidebarOpen(false)} settings={settings} products={products} currentUser={currentUser} syncStatus={syncStatus} />
+      <Sidebar activeView={activeView} navigate={navigate} open={sidebarOpen} onClose={() => setSidebarOpen(false)} settings={settings} products={products} currentUser={currentUser} />
 
       <div className="app-main">
         <header className="topbar">
@@ -754,10 +761,10 @@ function App() {
             </div>
           </div>
           <div className="topbar-actions">
-            <span className={`sync-indicator ${syncStatus}`} title={syncStatus === 'error' ? 'No fue posible sincronizar con Neon' : 'Persistencia remota activa'}>
+            {getUsername(currentUser) === 'matias' && <span className={`sync-indicator ${syncStatus}`} title={syncStatus === 'error' ? 'No fue posible sincronizar con Neon' : 'Persistencia remota activa'}>
               <Globe2 size={15} />
               <span>{syncStatus === 'saving' ? 'Guardando…' : syncStatus === 'error' ? 'Sin conexión' : 'Neon sincronizado'}</span>
-            </span>
+            </span>}
             <div className={`header-search ${globalSearchOpen ? 'open' : ''}`} ref={globalSearchRef}>
               <Search size={17} />
               <input ref={globalSearchInputRef} value={globalQuery} onChange={(event) => { setGlobalQuery(event.target.value); setGlobalSearchOpen(true) }} onFocus={() => setGlobalSearchOpen(true)} onKeyDown={handleGlobalSearchKeyDown} placeholder="Buscar producto o documento" aria-label="Buscar producto o documento" autoComplete="off" />
@@ -812,7 +819,7 @@ function App() {
           {activeView === 'pos' && <PointOfSale products={products} customers={customers} sales={sales} heldSales={heldSales} setHeldSales={setHeldSales} quotes={quotes} setQuotes={setQuotes} notify={notify} settings={settings} setSettings={setSettings} currentUser={currentUser} can={can} cashRegisters={cashRegisters} activeRegisterId={activeRegisterId} onRegisterChange={selectCashRegister} onCompleteSale={completeRemoteSale} initialQuoteId={moduleSearch.view === 'pos' ? moduleSearch.id : null} />}
           {activeView === 'inventory' && <Inventory products={products} notify={notify} settings={settings} currentUser={currentUser} can={can} onSaveProduct={saveRemoteProduct} initialQuery={moduleSearch.view === 'inventory' ? moduleSearch.query : ''} />}
           {activeView === 'receipts' && <Receipts products={products} receipts={receipts} suppliers={suppliers} notify={notify} onReceiveInventory={receiveRemoteInventory} highlightId={moduleSearch.view === 'receipts' ? moduleSearch.id : null} />}
-          {activeView === 'dispatches' && <Dispatches products={products} customers={customers} dispatches={dispatches} notify={notify} settings={settings} onCreateDispatch={createRemoteDispatch} onAdvanceDispatch={advanceRemoteDispatch} highlightId={moduleSearch.view === 'dispatches' ? moduleSearch.id : null} />}
+          {activeView === 'dispatches' && <Dispatches products={products} customers={customers} dispatches={dispatches} notify={notify} settings={settings} onCreateDispatch={createRemoteDispatch} onAdvanceDispatch={advanceRemoteDispatch} onCompleteDispatch={completeRemoteDispatch} highlightId={moduleSearch.view === 'dispatches' ? moduleSearch.id : null} />}
           {activeView === 'customers' && <Customers customers={customers} sales={sales} />}
           {activeView === 'suppliers' && <Suppliers suppliers={suppliers} setSuppliers={setSuppliers} notify={notify} currentUser={currentUser} />}
           {activeView === 'reports' && <Reports products={products} sales={sales} notify={notify} settings={settings} can={can} initialQuery={moduleSearch.view === 'reports' ? moduleSearch.query : ''} />}
@@ -930,11 +937,12 @@ function LoginScreen({ businessName, branchName, setupRequired, initialUsername,
           </div>
         </form>
       </section>
+      <div className="login-signature" aria-label="Desarrollado por MDintrans"><span>Desarrollado por</span><span>MDintrans</span></div>
     </main>
   )
 }
 
-function Sidebar({ activeView, navigate, open, onClose, settings, products, currentUser, syncStatus }) {
+function Sidebar({ activeView, navigate, open, onClose, settings, products, currentUser }) {
   return (
     <>
       {open && <button className="sidebar-backdrop" onClick={onClose} aria-label="Cerrar menú" />}
@@ -969,7 +977,10 @@ function Sidebar({ activeView, navigate, open, onClose, settings, products, curr
 
         <div className="sidebar-footer">
           {userCan(currentUser, 'settings') && <button className={activeView === 'settings' ? 'active' : ''} onClick={() => navigate('settings')}><Settings size={18} /><span>Configuración</span></button>}
-          <div className={`sync-state ${syncStatus}`}><span /><small>{syncStatus === 'saving' ? 'Guardando en Neon' : syncStatus === 'error' ? 'Sin conexión a Neon' : 'Neon sincronizado'}</small></div>
+          <div className="sidebar-signature" aria-label="Desarrollado por MDintrans">
+            <small>Desarrollado por</small>
+            <small>MDintrans</small>
+          </div>
         </div>
       </aside>
     </>
@@ -1704,7 +1715,7 @@ function Receipts({ products, receipts, suppliers, notify, onReceiveInventory, h
   )
 }
 
-function Dispatches({ products, customers, dispatches, notify, settings, onCreateDispatch, onAdvanceDispatch, highlightId = null }) {
+function Dispatches({ products, customers, dispatches, notify, settings, onCreateDispatch, onAdvanceDispatch, onCompleteDispatch, highlightId = null }) {
   const [showForm, setShowForm] = useState(false)
   const [lines, setLines] = useState([])
   const [productId, setProductId] = useState(String(products.find((product) => product.active !== false)?.id || ''))
@@ -1811,6 +1822,17 @@ function Dispatches({ products, customers, dispatches, notify, settings, onCreat
     notify('Estado del despacho actualizado')
   }
 
+  const complete = async (dispatch) => {
+    setAdvancingId(dispatch.dbId)
+    const result = await onCompleteDispatch(dispatch.dbId)
+    setAdvancingId(null)
+    if (result.error) {
+      notify(result.error, 'warning')
+      return
+    }
+    notify('Despacho completado y retirado del listado')
+  }
+
   return (
     <div className="module-page">
       <div className="module-toolbar"><div><h2>Despachos</h2><p>Prepara, controla y entrega pedidos de clientes.</p></div><button className="primary-button" onClick={() => setShowForm(true)}><Plus size={18} />Nuevo despacho</button></div>
@@ -1820,7 +1842,20 @@ function Dispatches({ products, customers, dispatches, notify, settings, onCreat
           const items = dispatches.filter((item) => item.status === status)
           const hasScroll = items.length > 2
           return <div className="dispatch-column" key={status}><div className="column-title"><span><Icon size={18} /></span><strong>{status}</strong><em>{items.length}</em></div>
-            <div className={`dispatch-items ${hasScroll ? 'is-scrollable' : ''}`} tabIndex={hasScroll ? 0 : undefined} aria-label={hasScroll ? `Lista de despachos: ${status}` : undefined}>{items.length ? items.map((item) => <div className={`dispatch-card ${item.id === highlightId ? 'search-highlight' : ''}`} key={item.id}><div><strong>{item.id}</strong><span className={`status-dot s${index}`} /></div><h4>{item.customer}</h4><p>{item.order}</p>{(item.address || item.contact) && <div className="dispatch-delivery">{item.address && <span><MapPin size={13} />{item.address}</span>}{item.contact && <span><Phone size={13} />{item.contact}</span>}</div>}<div className="dispatch-meta"><span><Box size={14} />{item.units} unidades</span><span><Clock3 size={14} />{item.date}</span></div><span className="dispatch-owner"><UserRound size={13} />{item.responsible || 'Matías Dintrans'}</span>{index < 2 && <button disabled={advancingId === item.dbId} onClick={() => advance(item)}>{advancingId === item.dbId ? 'Actualizando...' : index === 0 ? 'Marcar despachado' : 'Confirmar entrega'}<ArrowRight size={15} /></button>}</div>) : <div className="column-empty">Sin pedidos en esta etapa</div>}</div>
+            <div className={`dispatch-items ${hasScroll ? 'is-scrollable' : ''}`} tabIndex={hasScroll ? 0 : undefined} aria-label={hasScroll ? `Lista de despachos: ${status}` : undefined}>
+              {items.length ? items.map((item) => <div className={`dispatch-card ${item.id === highlightId ? 'search-highlight' : ''}`} key={item.id}>
+                <div><strong>{item.id}</strong><span className={`status-dot s${index}`} /></div>
+                <h4>{item.customer}</h4>
+                <p>{item.order}</p>
+                {(item.address || item.contact) && <div className="dispatch-delivery">{item.address && <span><MapPin size={13} />{item.address}</span>}{item.contact && <span><Phone size={13} />{item.contact}</span>}</div>}
+                <div className="dispatch-meta"><span><Box size={14} />{item.units} unidades</span><span><Clock3 size={14} />{item.date}</span></div>
+                <span className="dispatch-owner"><UserRound size={13} />{item.responsible || 'Matías Dintrans'}</span>
+                <button disabled={advancingId === item.dbId} onClick={() => index === 2 ? complete(item) : advance(item)}>
+                  {advancingId === item.dbId ? 'Actualizando...' : index === 0 ? 'Marcar despachado' : index === 1 ? 'Confirmar entrega' : 'Completado'}
+                  {index === 2 ? <Check size={15} /> : <ArrowRight size={15} />}
+                </button>
+              </div>) : <div className="column-empty">Sin pedidos en esta etapa</div>}
+            </div>
           </div>
         })}
       </section>
