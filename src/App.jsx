@@ -23,12 +23,13 @@ import {
   Globe2,
   Hammer,
   LayoutDashboard,
-  KeyRound,
+  LockKeyhole,
   LogOut,
   Mail,
   MapPin,
   Menu,
   Minus,
+  Monitor,
   PackageCheck,
   Pencil,
   Phone,
@@ -441,8 +442,8 @@ function App() {
 
   const notify = (message, tone = 'success') => setToast({ message, tone })
 
-  const loginWithPassword = async (username, password) => {
-    const result = await apiRequest('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
+  const loginWithPassword = async (username, password, remember = false) => {
+    const result = await apiRequest('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password, remember }) })
     if (result.error || result.requiresPasswordChange) return result
     hydrateRemoteState(result)
     return { success: true }
@@ -850,17 +851,19 @@ function LoginScreen({ businessName, branchName, setupRequired, initialUsername,
   const [password, setPassword] = useState('')
   const [passwordConfirm, setPasswordConfirm] = useState('')
   const [showPassword, setShowPassword] = useState(false)
+  const [remember, setRemember] = useState(false)
+  const [showRecoveryHelp, setShowRecoveryHelp] = useState(false)
   const [pendingUser, setPendingUser] = useState(null)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
   const isPasswordSetup = setupRequired || Boolean(pendingUser)
-  const heading = setupRequired ? 'Configura el acceso inicial' : pendingUser ? 'Crea tu contraseña personal' : 'Bienvenido nuevamente'
+  const heading = setupRequired ? 'Configura el acceso inicial' : pendingUser ? 'Crea tu contraseña personal' : 'Inicia sesión'
   const detail = setupRequired
     ? 'Define la contraseña del administrador para proteger el ERP.'
     : pendingUser
       ? `${pendingUser.name}, reemplaza la contraseña temporal antes de continuar.`
-      : 'Ingresa con el correo y la contraseña asignados a tu perfil.'
+      : 'Ingresa con tu usuario y contraseña para acceder.'
 
   const submit = async (event) => {
     event.preventDefault()
@@ -882,7 +885,7 @@ function LoginScreen({ businessName, branchName, setupRequired, initialUsername,
         ? await onCompletePasswordChange(pendingUser.userId, password)
         : setupRequired
           ? await onSetup(username, password)
-          : await onLogin(username, password)
+          : await onLogin(username, password, remember)
       if (result?.error) {
         setError(result.error)
       } else if (result?.requiresPasswordChange) {
@@ -900,23 +903,32 @@ function LoginScreen({ businessName, branchName, setupRequired, initialUsername,
 
   return (
     <main className="login-page">
-      <section className="login-brand-panel">
-        <div className="login-brand"><span><Hammer size={28} /></span><div><strong>{businessName}</strong><small>Sistema de gestión</small></div></div>
-        <div className="login-brand-copy"><span className="login-eyebrow">ERP ferretero</span><h1>Tu operación, inventario y ventas en un solo lugar.</h1><p>Accede con tu perfil para ver únicamente los módulos y acciones que tienes autorizados.</p></div>
-        <div className="login-security-note"><ShieldCheck size={20} /><span><strong>Acceso por perfil</strong><small>Administrador, vendedor o bodeguero</small></span></div>
-      </section>
+      <span className="login-decoration" aria-hidden="true" />
+      <header className="login-header">
+        <div className="login-brand">
+          <span className="login-brand-mark"><Hammer size={43} strokeWidth={2.8} /></span>
+          <span className="login-brand-name"><strong>{businessName}</strong><small>Sistema de gestión</small></span>
+        </div>
+        <div className="login-branch"><span>{branchName}</span><i aria-hidden="true" /></div>
+      </header>
       <section className="login-access-panel">
         <form className="login-card" onSubmit={submit}>
-          <div className="login-card-icon"><KeyRound size={22} /></div>
-          <div className="login-card-heading"><span>{branchName}</span><h2>{heading}</h2><p>{detail}</p></div>
-          {!pendingUser && <label>Usuario<input type="text" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required autoFocus placeholder="nombre.usuario" /></label>}
-          <label>{isPasswordSetup ? 'Nueva contraseña' : 'Contraseña'}<span className="login-password"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={isPasswordSetup ? 'new-password' : 'current-password'} required placeholder="••••••••" /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></span></label>
-          {isPasswordSetup && <label>Confirmar contraseña<input type={showPassword ? 'text' : 'password'} value={passwordConfirm} onChange={(event) => setPasswordConfirm(event.target.value)} autoComplete="new-password" required placeholder="Repite la contraseña" /><small>Usa 8 o más caracteres, con mayúscula, minúscula y número.</small></label>}
+          <div className="login-card-heading"><span>Acceso al sistema</span><h1>{heading}</h1><p>{detail}</p></div>
+          <div className="login-fields">
+            {!pendingUser && <div className="login-field"><UserRound size={21} aria-hidden="true" /><label className="sr-only" htmlFor="login-username">Usuario</label><input id="login-username" type="text" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required autoFocus placeholder="Usuario" /></div>}
+            <div className="login-field login-password"><LockKeyhole size={21} aria-hidden="true" /><label className="sr-only" htmlFor="login-password">{isPasswordSetup ? 'Nueva contraseña' : 'Contraseña'}</label><input id="login-password" type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={isPasswordSetup ? 'new-password' : 'current-password'} required placeholder={isPasswordSetup ? 'Nueva contraseña' : 'Contraseña'} /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{showPassword ? <EyeOff size={21} /> : <Eye size={21} />}</button></div>
+            {isPasswordSetup && <><div className="login-field"><LockKeyhole size={21} aria-hidden="true" /><label className="sr-only" htmlFor="login-password-confirm">Confirmar contraseña</label><input id="login-password-confirm" type={showPassword ? 'text' : 'password'} value={passwordConfirm} onChange={(event) => setPasswordConfirm(event.target.value)} autoComplete="new-password" required placeholder="Confirmar contraseña" /></div><p className="login-password-hint">Usa 8 o más caracteres, con mayúscula, minúscula y número.</p></>}
+          </div>
+          {!isPasswordSetup && <div className="login-options"><label className="login-remember"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} /><span>Mantener sesión iniciada</span></label><button className="login-forgot" type="button" onClick={() => setShowRecoveryHelp((visible) => !visible)}>¿Olvidaste tu contraseña?</button></div>}
+          {showRecoveryHelp && !isPasswordSetup && <p className="login-recovery-note">Solicita al administrador que restablezca tu acceso.</p>}
           {error && <div className="login-error" role="alert"><AlertTriangle size={16} /><span>{error}</span></div>}
           <button className="login-submit" disabled={submitting}>{submitting ? 'Validando acceso...' : setupRequired ? 'Configurar e ingresar' : pendingUser ? 'Guardar e ingresar' : 'Ingresar'}<ArrowRight size={18} /></button>
-          {!setupRequired && !pendingUser && <p className="login-help">Si olvidaste tu contraseña, solicita al administrador que restablezca tu acceso.</p>}
+          <div className="login-assurances" role="list" aria-label="Beneficios del sistema">
+            <div role="listitem"><ShieldCheck size={32} /><span>Seguro<br />y confiable</span></div>
+            <div role="listitem"><Monitor size={32} /><span>Disponible<br />siempre</span></div>
+            <div role="listitem"><Users size={32} /><span>Diseñado<br />para tu equipo</span></div>
+          </div>
         </form>
-        <footer><span>{businessName}</span><small>Datos en Neon · {branchName}</small></footer>
       </section>
     </main>
   )

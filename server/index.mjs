@@ -69,9 +69,10 @@ const cookies = (request) => Object.fromEntries(String(request.headers.cookie ||
   return [decodeURIComponent(part.slice(0, separator).trim()), decodeURIComponent(part.slice(separator + 1).trim())]
 }).filter(([key]) => key))
 
-const setSessionCookie = (response, token) => {
+const setSessionCookie = (response, token, remember = false) => {
   const secure = process.env.NODE_ENV === 'production' || process.env.COOKIE_SECURE === 'true'
-  response.setHeader('Set-Cookie', `${sessionCookie}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict${secure ? '; Secure' : ''}`)
+  const lifetime = remember ? `; Max-Age=${sessionHours * 60 * 60}` : ''
+  response.setHeader('Set-Cookie', `${sessionCookie}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict${lifetime}${secure ? '; Secure' : ''}`)
 }
 
 const clearSessionCookie = (response) => {
@@ -336,7 +337,7 @@ const loadSaleReceipt = async (database, saleId) => {
   }
 }
 
-const createSession = async (database, response, userId, organizationId, request) => {
+const createSession = async (database, response, userId, organizationId, request, remember = false) => {
   const previousToken = cookies(request)[sessionCookie]
   if (previousToken) {
     await database.query('update public.user_sessions set revoked_at = now() where token_hash = $1 and revoked_at is null', [hashToken(previousToken)])
@@ -346,7 +347,7 @@ const createSession = async (database, response, userId, organizationId, request
     insert into public.user_sessions (user_id, organization_id, token_hash, ip_address, user_agent, expires_at)
     values ($1, $2, $3, nullif($4, '')::inet, $5, now() + ($6 * interval '1 hour'))
   `, [userId, organizationId, hashToken(token), request.ip || '', request.get('user-agent') || '', sessionHours])
-  setSessionCookie(response, token)
+  setSessionCookie(response, token, remember)
 }
 
 const loadSession = async (request) => {
@@ -925,7 +926,7 @@ app.post('/api/auth/login', asyncRoute(async (request, response) => {
   clearLoginAttempts(request, login)
   await withTransaction(async (client) => {
     await client.query('update public.app_users set last_login_at = now() where id = $1', [user.id])
-    await createSession(client, response, user.id, user.organization_id, request)
+    await createSession(client, response, user.id, user.organization_id, request, request.body.remember === true)
   })
   if (user.must_change_password) {
     return response.json({ requiresPasswordChange: true, userId: user.id, name: user.full_name })
