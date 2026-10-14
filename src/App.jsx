@@ -60,6 +60,9 @@ const money = new Intl.NumberFormat('es-CL', {
   maximumFractionDigits: 0,
 })
 
+const BRAND_LOGO_SRC = '/logo-ferreteria-los-nogales.png'
+const SIDEBAR_LOGO_SRC = '/logo-ferreteria-los-nogales-sidebar.png'
+
 const number = new Intl.NumberFormat('es-CL')
 
 const localDateKey = (date = new Date()) => {
@@ -913,8 +916,7 @@ function LoginScreen({ businessName, branchName, setupRequired, initialUsername,
       <span className="login-decoration" aria-hidden="true" />
       <header className="login-header">
         <div className="login-brand">
-          <span className="login-brand-mark"><Hammer size={43} strokeWidth={2.8} /></span>
-          <span className="login-brand-name"><strong>{businessName}</strong><small>Sistema de gestión</small></span>
+          <img src={BRAND_LOGO_SRC} alt={businessName} />
         </div>
         <div className="login-branch"><span>{branchName}</span><i aria-hidden="true" /></div>
       </header>
@@ -948,8 +950,7 @@ function Sidebar({ activeView, navigate, open, onClose, settings, products, curr
       {open && <button className="sidebar-backdrop" onClick={onClose} aria-label="Cerrar menú" />}
       <aside className={`sidebar ${open ? 'open' : ''}`}>
         <div className="brand">
-          <span className="brand-mark"><Hammer size={23} strokeWidth={2.4} /></span>
-          <span><strong>{settings.business.name.replace(/^Ferretería\s+/i, '')}</strong><small>Ferretería ERP</small></span>
+          <img src={SIDEBAR_LOGO_SRC} alt={settings.business.name} />
           <button className="icon-button close-sidebar" onClick={onClose} aria-label="Cerrar menú"><X size={19} /></button>
         </div>
 
@@ -1343,8 +1344,7 @@ function ReceiptModal({ receipt, settings, onClose }) {
         <div className="receipt-stage">
           <article className="receipt-paper" aria-label={`Boleta de venta ${receipt.folio}`}>
             <header className="ticket-store">
-              <span className="ticket-logo"><Hammer size={24} strokeWidth={2.3} /></span>
-              <h3>{settings.business.name}</h3>
+              <img className="ticket-logo" src={BRAND_LOGO_SRC} alt={settings.business.name} />
               <p>{settings.business.legalName}</p>
               <p>RUT {settings.business.rut}</p>
               <p>{settings.business.address}</p>
@@ -1419,8 +1419,8 @@ function QuoteModal({ quote, settings, onClose }) {
           <article className="quote-paper" aria-label={`Cotización ${quote.id}`}>
             <header className="quote-header">
               <div className="quote-brand">
-                <span><Hammer size={26} strokeWidth={2.2} /></span>
-                <div><h3>{settings.business.name}</h3><p>{settings.business.legalName}</p><p>RUT {settings.business.rut}</p><p>{settings.business.address}</p><p>{settings.business.phone} · {settings.business.email}</p></div>
+                <img src={BRAND_LOGO_SRC} alt={settings.business.name} />
+                <div><p>{settings.business.legalName}</p><p>RUT {settings.business.rut}</p><p>{settings.business.address}</p><p>{settings.business.phone} · {settings.business.email}</p></div>
               </div>
               <div className="quote-number"><span>COTIZACIÓN</span><strong>{quote.id}</strong><small>Emisión: {formatDate(quote.date)}</small><small>Vencimiento: {formatDate(quote.validUntil)}</small></div>
             </header>
