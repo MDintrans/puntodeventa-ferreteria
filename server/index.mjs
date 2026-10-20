@@ -57,6 +57,29 @@ const operationError = (message, status = 400) => Object.assign(new Error(messag
 const asNumber = (value) => Number(value || 0)
 const validIdempotencyKey = (value) => typeof value === 'string' && value.length >= 8 && value.length <= 160
 
+const paymentRowsDto = (value) => (Array.isArray(value) ? value : []).map((payment) => ({
+  method: String(payment.method || '').trim(),
+  amount: asNumber(payment.amount),
+})).filter((payment) => payment.method && payment.amount > 0)
+
+const requestedSalePayments = (body = {}) => {
+  const hasPaymentList = Array.isArray(body.payments)
+  const source = hasPaymentList ? body.payments : [{ method: body.paymentMethod, amount: null }]
+  if (source.length < 1 || source.length > 2) throw operationError('La venta debe tener uno o dos medios de pago.')
+  const payments = source.map((payment) => {
+    const method = String(payment?.method || '').trim()
+    if (method.length < 2 || method.length > 50) throw operationError('Selecciona un medio de pago válido.')
+    if (!hasPaymentList) return { method, amount: null }
+    const amount = Number(payment?.amount)
+    if (!Number.isSafeInteger(amount) || amount <= 0) throw operationError('Cada medio de pago debe tener un monto válido mayor que cero.')
+    return { method, amount }
+  })
+  if (new Set(payments.map((payment) => payment.method.toLocaleLowerCase('es-CL'))).size !== payments.length) {
+    throw operationError('Los medios de pago de una venta mixta deben ser distintos.')
+  }
+  return payments
+}
+
 const passwordError = (password) => {
   if (String(password || '').length < 8) return 'La contrasena debe tener al menos 8 caracteres'
   if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password)) return 'Incluye una mayuscula, una minuscula y un numero'
@@ -171,7 +194,7 @@ const listSales = async (database, organizationId, branchId, limit = 500) => {
       to_char(sale.sold_at at time zone 'America/Santiago', 'HH24:MI') as sale_time,
       sale.total_amount, sale.status, app_user.full_name as seller,
       coalesce(items.quantity, 0) as item_count,
-      coalesce(payment.method, 'No informado') as payment_method,
+      coalesce(payment.payments, '[]'::json) as payments,
       cash_register.name as register_name
     from public.sales sale
     left join public.app_users app_user on app_user.id = sale.created_by
@@ -180,29 +203,33 @@ const listSales = async (database, organizationId, branchId, limit = 500) => {
       select sum(quantity) as quantity from public.sale_items where sale_id = sale.id
     ) items on true
     left join lateral (
-      select method from public.sale_payments
+      select json_agg(json_build_object('method', method, 'amount', amount) order by paid_at, id) as payments
+      from public.sale_payments
       where sale_id = sale.id and status = 'completed'
-      order by paid_at limit 1
     ) payment on true
     where sale.organization_id = $1 and sale.branch_id = $2
     order by sale.sold_at desc
     limit $3
   `, [organizationId, branchId, limit])
-  return result.rows.map((row) => ({
-    id: `V-${row.folio}`,
-    dbId: row.db_id,
-    folio: String(row.folio).padStart(8, '0'),
-    createdAt: row.sold_at,
-    date: row.sale_date,
-    time: row.sale_time,
-    customer: row.customer_name_snapshot,
-    seller: row.seller || 'Usuario eliminado',
-    items: asNumber(row.item_count),
-    payment: row.payment_method,
-    register: row.register_name || 'Caja',
-    total: asNumber(row.total_amount),
-    status: row.status === 'completed' ? 'Completada' : row.status,
-  }))
+  return result.rows.map((row) => {
+    const payments = paymentRowsDto(row.payments)
+    return {
+      id: `V-${row.folio}`,
+      dbId: row.db_id,
+      folio: String(row.folio).padStart(8, '0'),
+      createdAt: row.sold_at,
+      date: row.sale_date,
+      time: row.sale_time,
+      customer: row.customer_name_snapshot,
+      seller: row.seller || 'Usuario eliminado',
+      items: asNumber(row.item_count),
+      payments,
+      payment: payments.map((payment) => payment.method).join(' + ') || 'No informado',
+      register: row.register_name || 'Caja',
+      total: asNumber(row.total_amount),
+      status: row.status === 'completed' ? 'Completada' : row.status,
+    }
+  })
 }
 
 const listReceipts = async (database, organizationId, branchId, limit = 500) => {
@@ -299,12 +326,13 @@ const loadSaleReceipt = async (database, saleId) => {
       select sale.id, sale.folio, sale.sold_at, sale.customer_name_snapshot,
         sale.net_amount, sale.tax_amount, sale.total_amount,
         app_user.full_name as cashier, cash_register.name as register_name,
-        payment.method as payment_method
+        coalesce(payment.payments, '[]'::json) as payments
       from public.sales sale
       left join public.app_users app_user on app_user.id = sale.created_by
       left join public.cash_registers cash_register on cash_register.id = sale.cash_register_id
       left join lateral (
-        select method from public.sale_payments where sale_id = sale.id and status = 'completed' order by paid_at limit 1
+        select json_agg(json_build_object('method', method, 'amount', amount) order by paid_at, id) as payments
+        from public.sale_payments where sale_id = sale.id and status = 'completed'
       ) payment on true
       where sale.id = $1
     `, [saleId]),
@@ -316,6 +344,7 @@ const loadSaleReceipt = async (database, saleId) => {
   ])
   const row = header.rows[0]
   if (!row) return null
+  const payments = paymentRowsDto(row.payments)
   return {
     id: `V-${row.folio}`,
     dbId: row.id,
@@ -327,7 +356,8 @@ const loadSaleReceipt = async (database, saleId) => {
     cashier: row.cashier || 'Usuario eliminado',
     seller: row.cashier || 'Usuario eliminado',
     register: row.register_name || 'Caja',
-    payment: row.payment_method || 'No informado',
+    payments,
+    payment: payments.map((payment) => payment.method).join(' + ') || 'No informado',
     net: asNumber(row.net_amount),
     tax: asNumber(row.tax_amount),
     total: asNumber(row.total_amount),
@@ -558,8 +588,7 @@ const completeSaleTransaction = async (auth, body = {}) => {
   if (!validIdempotencyKey(idempotencyKey)) throw operationError('La operación de venta no tiene una clave válida.')
   if (!uuidPattern.test(String(body.cashRegisterId || ''))) throw operationError('Selecciona una caja válida.')
   const lines = normalizeOperationLines(body.lines)
-  const paymentMethod = String(body.paymentMethod || '').trim()
-  if (paymentMethod.length < 2 || paymentMethod.length > 50) throw operationError('Selecciona un medio de pago válido.')
+  const requestedPayments = requestedSalePayments(body)
   const saleId = await withTransaction(async (client) => {
     await client.query('select pg_advisory_xact_lock(hashtext($1))', [`sale:${auth.organization_id}:${idempotencyKey}`])
     const previous = await client.query('select id from public.sales where organization_id = $1 and idempotency_key = $2', [auth.organization_id, idempotencyKey])
@@ -595,6 +624,10 @@ const completeSaleTransaction = async (auth, body = {}) => {
     }
     const total = lockedLines.reduce((sum, line) => sum + line.lineTotal, 0)
     if (total <= 0) throw operationError('El total de la venta debe ser mayor que cero.')
+    const payments = requestedPayments.map((payment) => ({ ...payment, amount: payment.amount ?? total }))
+    if (payments.reduce((sum, payment) => sum + payment.amount, 0) !== total) {
+      throw operationError('Los montos de los medios de pago deben sumar exactamente el total de la venta.')
+    }
     const net = lockedLines.reduce((sum, line) => sum + line.lineNet, 0)
     const tax = total - net
     const folio = await client.query("select public.next_document_folio($1, $2, 'sale') as folio", [auth.organization_id, auth.branch_id])
@@ -627,23 +660,26 @@ const completeSaleTransaction = async (auth, body = {}) => {
         ) values ($1, $2, $3, 'sale', $4, $5, $6, 'sale', $7, 'Venta completada', $8)
       `, [auth.organization_id, auth.branch_id, line.productId, -line.quantity, inventory.rows[0].on_hand, inventory.rows[0].reserved, createdSaleId, auth.user_id])
     }
-    await client.query(`
-      insert into public.sale_payments (
-        organization_id, sale_id, cash_session_id, method, amount, created_by
-      ) values ($1, $2, $3, $4, $5, $6)
-    `, [auth.organization_id, createdSaleId, cashSession.rows[0]?.id || null, paymentMethod, total, auth.user_id])
-    if (cashSession.rowCount && paymentMethod.toLocaleLowerCase('es-CL') === 'efectivo') {
+    for (const payment of payments) {
+      await client.query(`
+        insert into public.sale_payments (
+          organization_id, sale_id, cash_session_id, method, amount, created_by
+        ) values ($1, $2, $3, $4, $5, $6)
+      `, [auth.organization_id, createdSaleId, cashSession.rows[0]?.id || null, payment.method, payment.amount, auth.user_id])
+    }
+    const cashAmount = payments.filter((payment) => payment.method.toLocaleLowerCase('es-CL') === 'efectivo').reduce((sum, payment) => sum + payment.amount, 0)
+    if (cashSession.rowCount && cashAmount > 0) {
       await client.query(`
         insert into public.cash_movements (
           organization_id, cash_session_id, movement_type, amount, reason,
           reference_type, reference_id, created_by
         ) values ($1, $2, 'income', $3, 'Venta en efectivo', 'sale', $4, $5)
-      `, [auth.organization_id, cashSession.rows[0].id, total, createdSaleId, auth.user_id])
+      `, [auth.organization_id, cashSession.rows[0].id, cashAmount, createdSaleId, auth.user_id])
     }
     await client.query(`
       insert into public.audit_logs (organization_id, user_id, action, entity_type, entity_id, new_data)
       values ($1, $2, 'complete', 'sale', $3, $4::jsonb)
-    `, [auth.organization_id, auth.user_id, createdSaleId, JSON.stringify({ total, registerId: body.cashRegisterId, idempotencyKey })])
+    `, [auth.organization_id, auth.user_id, createdSaleId, JSON.stringify({ total, payments, registerId: body.cashRegisterId, idempotencyKey })])
     return createdSaleId
   })
   return {

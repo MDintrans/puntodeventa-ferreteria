@@ -73,7 +73,13 @@ const localDateKey = (date = new Date()) => {
 }
 
 const getSaleDate = (sale) => sale.date || localDateKey()
-const getSalePayment = (sale) => sale.payment || 'Débito'
+const getSalePayments = (sale) => {
+  if (Array.isArray(sale.payments) && sale.payments.length) {
+    return sale.payments.map((payment) => ({ method: payment.method, amount: Number(payment.amount) || 0 }))
+  }
+  return [{ method: sale.payment || 'Débito', amount: Number(sale.total) || 0 }]
+}
+const getSalePayment = (sale) => getSalePayments(sale).map((payment) => payment.method).join(' + ')
 
 const getSaleTimestamp = (sale) => {
   if (sale.createdAt) {
@@ -1109,6 +1115,9 @@ function PointOfSale({ products, customers, heldSales, setHeldSales, quotes, set
   const [cart, setCart] = useState([])
   const [customer, setCustomer] = useState('Público general')
   const [payment, setPayment] = useState(settings.sales.defaultPayment)
+  const [splitPayment, setSplitPayment] = useState(false)
+  const [secondaryPayment, setSecondaryPayment] = useState(() => settings.sales.paymentMethods.find((method) => method !== settings.sales.defaultPayment) || '')
+  const [primaryPaymentAmount, setPrimaryPaymentAmount] = useState('')
   const [completedReceipt, setCompletedReceipt] = useState(null)
   const [quote, setQuote] = useState(null)
   const [showHeldSales, setShowHeldSales] = useState(false)
@@ -1127,6 +1136,17 @@ function PointOfSale({ products, customers, heldSales, setHeldSales, quotes, set
   useEffect(() => {
     if (!paymentMethods.includes(payment)) setPayment(paymentMethods[0])
   }, [payment, paymentMethods])
+
+  useEffect(() => {
+    if (paymentMethods.length < 2) {
+      setSplitPayment(false)
+      setSecondaryPayment('')
+      return
+    }
+    if (!paymentMethods.includes(secondaryPayment) || secondaryPayment === payment) {
+      setSecondaryPayment(paymentMethods.find((method) => method !== payment) || '')
+    }
+  }, [payment, paymentMethods, secondaryPayment])
 
   const visibleProducts = products.filter((product) => {
     if (product.active === false) return false
@@ -1154,11 +1174,53 @@ function PointOfSale({ products, customers, heldSales, setHeldSales, quotes, set
   const subtotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0)
   const net = Math.round(subtotal / 1.19)
   const tax = subtotal - net
+  const normalizedPrimaryPaymentAmount = Number(primaryPaymentAmount)
+  const secondaryPaymentAmount = Math.max(0, subtotal - (Number.isFinite(normalizedPrimaryPaymentAmount) ? normalizedPrimaryPaymentAmount : 0))
+  const splitPaymentValid = !splitPayment || (
+    Number.isSafeInteger(normalizedPrimaryPaymentAmount)
+    && normalizedPrimaryPaymentAmount > 0
+    && normalizedPrimaryPaymentAmount < subtotal
+    && secondaryPayment
+    && secondaryPayment !== payment
+  )
+
+  const selectPrimaryPayment = (method) => {
+    setPayment(method)
+    if (method === secondaryPayment) setSecondaryPayment(paymentMethods.find((item) => item !== method) || '')
+  }
+
+  const toggleSplitPayment = () => {
+    if (splitPayment) {
+      setSplitPayment(false)
+      setPrimaryPaymentAmount('')
+      return
+    }
+    const cashMethod = paymentMethods.find((method) => method.toLocaleLowerCase('es-CL') === 'efectivo') || payment
+    const cardMethod = paymentMethods.find((method) => ['débito', 'debito', 'crédito', 'credito'].includes(method.toLocaleLowerCase('es-CL')) && method !== cashMethod)
+      || paymentMethods.find((method) => method !== cashMethod)
+      || ''
+    setPayment(cashMethod)
+    setSecondaryPayment(cardMethod)
+    setPrimaryPaymentAmount(subtotal > 1 ? String(Math.floor(subtotal / 2)) : '')
+    setSplitPayment(true)
+  }
+
+  const resetPaymentSelection = () => {
+    const defaultPayment = paymentMethods.includes(settings.sales.defaultPayment) ? settings.sales.defaultPayment : paymentMethods[0]
+    setPayment(defaultPayment)
+    setSecondaryPayment(paymentMethods.find((method) => method !== defaultPayment) || '')
+    setPrimaryPaymentAmount('')
+    setSplitPayment(false)
+  }
 
   const completeSale = async () => {
     if (!cart.length || checkoutSaving) return
     if (!activeRegisterId) {
       notify('Selecciona una caja activa antes de cobrar', 'warning')
+      return
+    }
+    if (!splitPaymentValid) {
+      notify('Ingresa un monto válido para el primer medio de pago', 'warning')
       return
     }
     saleOperationRef.current ||= createOperationKey()
@@ -1167,7 +1229,12 @@ function PointOfSale({ products, customers, heldSales, setHeldSales, quotes, set
       idempotencyKey: saleOperationRef.current,
       cashRegisterId: activeRegisterId,
       customerName: customer,
-      paymentMethod: payment,
+      payments: splitPayment
+        ? [
+            { method: payment, amount: normalizedPrimaryPaymentAmount },
+            { method: secondaryPayment, amount: secondaryPaymentAmount },
+          ]
+        : [{ method: payment, amount: subtotal }],
       lines: cart.map((item) => ({ productId: item.id, quantity: item.qty })),
     })
     setCheckoutSaving(false)
@@ -1178,6 +1245,7 @@ function PointOfSale({ products, customers, heldSales, setHeldSales, quotes, set
     saleOperationRef.current = null
     setCart([])
     setCustomer('Público general')
+    resetPaymentSelection()
     setCompletedReceipt(result.receipt)
   }
 
@@ -1218,6 +1286,9 @@ function PointOfSale({ products, customers, heldSales, setHeldSales, quotes, set
       time: now.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }),
       customer,
       payment,
+      splitPayment,
+      secondaryPayment,
+      primaryPaymentAmount: splitPayment ? normalizedPrimaryPaymentAmount : null,
       seller: currentUser.name,
       userId: currentUser.id,
       lines: cart.map((item) => ({ ...item })),
@@ -1228,7 +1299,7 @@ function PointOfSale({ products, customers, heldSales, setHeldSales, quotes, set
     setHeldSales((current) => [heldSale, ...current])
     setCart([])
     setCustomer('Público general')
-    setPayment(settings.sales.defaultPayment)
+    resetPaymentSelection()
     notify(`Venta ${heldSale.id} guardada en espera`)
   }
 
@@ -1246,6 +1317,17 @@ function PointOfSale({ products, customers, heldSales, setHeldSales, quotes, set
     setCart(restoredLines)
     setCustomer(heldSale.customer)
     setPayment(heldSale.payment || settings.sales.defaultPayment)
+    const restoredTotal = restoredLines.reduce((sum, line) => sum + line.price * line.qty, 0)
+    const restoredPrimaryAmount = Number(heldSale.primaryPaymentAmount)
+    const canRestoreSplit = Boolean(heldSale.splitPayment)
+      && Number.isSafeInteger(restoredPrimaryAmount)
+      && restoredPrimaryAmount > 0
+      && restoredPrimaryAmount < restoredTotal
+      && paymentMethods.includes(heldSale.secondaryPayment)
+      && heldSale.secondaryPayment !== heldSale.payment
+    setSplitPayment(canRestoreSplit)
+    setSecondaryPayment(canRestoreSplit ? heldSale.secondaryPayment : paymentMethods.find((method) => method !== heldSale.payment) || '')
+    setPrimaryPaymentAmount(canRestoreSplit ? String(restoredPrimaryAmount) : '')
     setHeldSales((current) => current.filter((sale) => sale.id !== heldSale.id))
     setShowHeldSales(false)
     notify(adjusted ? `Venta ${heldSale.id} retomada con stock ajustado` : `Venta ${heldSale.id} retomada`, adjusted ? 'warning' : 'success')
@@ -1312,13 +1394,26 @@ function PointOfSale({ products, customers, heldSales, setHeldSales, quotes, set
         </div>
 
         <div className="payment-tabs">
-          {paymentMethods.map((method) => <button key={method} className={payment === method ? 'active' : ''} onClick={() => setPayment(method)}>{method}</button>)}
+          {paymentMethods.map((method) => <button key={method} className={payment === method ? 'active' : ''} onClick={() => selectPrimaryPayment(method)}>{method}</button>)}
         </div>
-        <button className="checkout-button" disabled={!cart.length || !activeRegisterId || checkoutSaving} onClick={completeSale}><span>{checkoutSaving ? 'Procesando...' : 'Cobrar'}</span><strong>{money.format(subtotal)}</strong><ArrowRight size={19} /></button>
+        <button type="button" className={`mixed-payment-toggle${splitPayment ? ' active' : ''}`} disabled={paymentMethods.length < 2 || subtotal < 2} onClick={toggleSplitPayment}><CircleDollarSign size={15} />{splitPayment ? 'Usar un solo medio' : 'Dividir en dos medios'}</button>
+        {splitPayment && <div className="mixed-payment-editor">
+          <div className="mixed-payment-row">
+            <span>Monto en <strong>{payment}</strong></span>
+            <label className="payment-amount-input"><span>$</span><input type="text" inputMode="numeric" aria-label={`Monto en ${payment}`} value={primaryPaymentAmount ? number.format(Number(primaryPaymentAmount)) : ''} onChange={(event) => setPrimaryPaymentAmount(event.target.value.replace(/\D/g, ''))} /></label>
+          </div>
+          <div className="mixed-payment-row secondary">
+            <label htmlFor="secondary-payment-method">Saldo en</label>
+            <select id="secondary-payment-method" value={secondaryPayment} onChange={(event) => setSecondaryPayment(event.target.value)}>{paymentMethods.filter((method) => method !== payment).map((method) => <option key={method}>{method}</option>)}</select>
+            <strong>{money.format(secondaryPaymentAmount)}</strong>
+          </div>
+          <small className={splitPaymentValid ? '' : 'error'}>{splitPaymentValid ? 'El saldo se calcula automáticamente.' : `El primer monto debe estar entre $1 y ${money.format(Math.max(1, subtotal - 1))}.`}</small>
+        </div>}
+        <button className="checkout-button" disabled={!cart.length || !activeRegisterId || checkoutSaving || !splitPaymentValid} onClick={completeSale}><span>{checkoutSaving ? 'Procesando...' : 'Cobrar'}</span><strong>{money.format(subtotal)}</strong><ArrowRight size={19} /></button>
         <div className="cart-footer-actions"><button disabled={!cart.length} onClick={holdCurrentSale}><Clock3 size={16} />Dejar en espera</button><button disabled={!cart.length} onClick={createQuote}><FileText size={16} />Cotizar</button></div>
       </aside>
     </div>
-    {completedReceipt && <ReceiptModal receipt={completedReceipt} settings={settings} onClose={() => { setCompletedReceipt(null); setPayment(settings.sales.defaultPayment) }} />}
+    {completedReceipt && <ReceiptModal receipt={completedReceipt} settings={settings} onClose={() => { setCompletedReceipt(null); resetPaymentSelection() }} />}
     {quote && <QuoteModal quote={quote} settings={settings} onClose={() => setQuote(null)} />}
     {showHeldSales && <HeldSalesModal sales={heldSales} hasActiveCart={cart.length > 0} canDelete={can('deleteHeldSales')} onResume={resumeHeldSale} onDelete={deleteHeldSale} onClose={() => setShowHeldSales(false)} />}
     </>
@@ -1361,6 +1456,9 @@ function ReceiptModal({ receipt, settings, onClose }) {
               <div><span>Cliente</span><strong>{receipt.customer}</strong></div>
               <div><span>Forma de pago</span><strong>{receipt.payment}</strong></div>
             </div>
+            {receipt.payments?.length > 1 && <div className="ticket-payment-breakdown">
+              {receipt.payments.map((payment) => <div key={payment.method}><span>{payment.method}</span><strong>{money.format(payment.amount)}</strong></div>)}
+            </div>}
 
             <div className="ticket-divider" />
             <div className="ticket-items-head"><span>Detalle</span><span>Total</span></div>
@@ -2060,18 +2158,19 @@ function Reports({ products, sales, notify, settings, can, initialQuery = '' }) 
     return sales.map((sale) => ({
       ...sale,
       date: getSaleDate(sale),
+      payments: getSalePayments(sale),
       payment: getSalePayment(sale),
       seller: sale.seller || 'Matías Dintrans',
     }))
   }, [sales, today])
 
   const years = [...new Set([...normalizedSales.map((sale) => sale.date.slice(0, 4)), today.slice(0, 4)])].sort((a, b) => b.localeCompare(a))
-  const paymentMethods = [...new Set(normalizedSales.map((sale) => sale.payment))]
+  const paymentMethods = [...new Set(normalizedSales.flatMap((sale) => sale.payments.map((payment) => payment.method)))]
 
   const filteredSales = useMemo(() => normalizedSales.filter((sale) => {
     const searchValue = `${sale.id} ${sale.customer}`.toLowerCase()
     const matchesQuery = searchValue.includes(query.trim().toLowerCase())
-    const matchesPayment = paymentFilter === 'Todos' || sale.payment === paymentFilter
+    const matchesPayment = paymentFilter === 'Todos' || sale.payments.some((payment) => payment.method === paymentFilter)
     const matchesPeriod = period === 'Todos'
       || (period === 'Día' && sale.date === day)
       || (period === 'Mes' && sale.date.startsWith(month))
@@ -2111,7 +2210,10 @@ function Reports({ products, sales, notify, settings, can, initialQuery = '' }) 
   }, [filteredSales, period])
 
   const paymentBreakdown = useMemo(() => {
-    const groups = filteredSales.reduce((result, sale) => ({ ...result, [sale.payment]: (result[sale.payment] || 0) + sale.total }), {})
+    const groups = filteredSales.reduce((result, sale) => {
+      sale.payments.forEach((payment) => { result[payment.method] = (result[payment.method] || 0) + payment.amount })
+      return result
+    }, {})
     return Object.entries(groups).sort((a, b) => b[1] - a[1])
   }, [filteredSales])
 

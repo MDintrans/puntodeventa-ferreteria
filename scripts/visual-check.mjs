@@ -88,6 +88,7 @@ try {
   await mkdir('artifacts', { recursive: true })
 
   const firstTerminal = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+  firstTerminal.setDefaultTimeout(20000)
   await login(firstTerminal, baseUrl)
   await inspectViewport(firstTerminal, 'login y dashboard de escritorio')
 
@@ -104,15 +105,21 @@ try {
   assert.equal(await firstRegisterSelect.locator('option').count(), 3, 'El POS debe mostrar dos cajas y la opción vacía')
   await firstRegisterSelect.selectOption({ label: 'Caja 02 (CAJA-02)' })
   await firstTerminal.getByRole('button', { name: /Producto prueba dos cajas/ }).click()
+  await firstTerminal.getByRole('button', { name: 'Dividir en dos medios', exact: true }).click()
+  await firstTerminal.getByLabel('Monto en Efectivo').fill('400')
+  await firstTerminal.getByText('$790', { exact: true }).waitFor()
   await firstTerminal.locator('.checkout-button').click()
   const firstReceipt = firstTerminal.getByRole('dialog')
   await firstReceipt.getByRole('heading', { name: 'Venta completada' }).waitFor()
   await firstReceipt.getByText(/Caja 02 · Administrador UI/).waitFor()
+  await firstReceipt.getByText('Efectivo', { exact: true }).waitFor()
+  await firstReceipt.getByText('Débito', { exact: true }).waitFor()
   await firstTerminal.screenshot({ path: 'artifacts/transaccion-dos-cajas.png', fullPage: true })
   await firstReceipt.getByRole('button', { name: 'Finalizar', exact: true }).click()
 
   const secondContext = await browser.newContext({ viewport: { width: 390, height: 844 } })
   const secondTerminal = await secondContext.newPage()
+  secondTerminal.setDefaultTimeout(20000)
   await login(secondTerminal, baseUrl)
   await secondTerminal.locator('.mobile-nav').getByRole('button', { name: 'Venta', exact: true }).click()
   const secondRegisterSelect = secondTerminal.locator('.register-field select')
@@ -126,10 +133,11 @@ try {
   const databaseState = await pool.query(`
     select
       (select count(*)::int from public.sales where organization_id = $1) as sales,
+      (select count(*)::int from public.sale_payments where organization_id = $1) as payments,
       (select count(distinct cash_register_id)::int from public.sales where organization_id = $1) as registers,
       (select on_hand from public.branch_inventory where branch_id = $2 and product_id = $3) as on_hand
   `, [organizationId, branchId, product.rows[0].id])
-  assert.deepEqual(databaseState.rows[0], { sales: 2, registers: 2, on_hand: '0.000' })
+  assert.deepEqual(databaseState.rows[0], { sales: 2, payments: 3, registers: 2, on_hand: '0.000' })
 
   await firstTerminal.evaluate(() => window.dispatchEvent(new Event('focus')))
   await firstTerminal.waitForFunction(() => {

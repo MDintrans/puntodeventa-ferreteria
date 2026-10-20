@@ -34,6 +34,10 @@ try {
   const auth = { organization_id: organizationId, branch_id: branchId, user_id: userId }
 
   const firstRegister = await pool.query('select id from public.cash_registers where branch_id = $1 order by created_at limit 1', [branchId])
+  await pool.query(`
+    insert into public.cash_sessions (organization_id, branch_id, cash_register_id, opening_amount, opened_by)
+    values ($1, $2, $3, 0, $4)
+  `, [organizationId, branchId, firstRegister.rows[0].id, userId])
   const secondRegister = await pool.query(`
     insert into public.cash_registers (organization_id, branch_id, code, name)
     values ($1, $2, 'CAJA-02', 'Caja 02')
@@ -147,10 +151,50 @@ try {
   assert.ok(completed.rows[0].completed_at, 'El despacho completado conserva su registro archivado')
   assert.ok(!completion.dispatches.some((item) => item.dbId === dispatch.dispatchId), 'El despacho completado desaparece del tablero')
 
+  await assert.rejects(completeSaleTransaction(auth, {
+    idempotencyKey: `sale-${suffix}-invalid-mix`,
+    cashRegisterId: firstRegister.rows[0].id,
+    customerName: 'Cliente pago mixto inválido',
+    payments: [
+      { method: 'Efectivo', amount: 400 },
+      { method: 'Débito', amount: 700 },
+    ],
+    lines: [{ productId, quantity: 1 }],
+  }), /deben sumar exactamente el total/)
+
+  const mixedSale = await completeSaleTransaction(auth, {
+    idempotencyKey: `sale-${suffix}-mixed`,
+    cashRegisterId: firstRegister.rows[0].id,
+    customerName: 'Cliente pago mixto',
+    payments: [
+      { method: 'Efectivo', amount: 400 },
+      { method: 'Débito', amount: 790 },
+    ],
+    lines: [{ productId, quantity: 1 }],
+  })
+  const mixedPaymentState = await pool.query(`
+    select method, amount from public.sale_payments
+    where sale_id = $1 order by amount
+  `, [mixedSale.receipt.dbId])
+  assert.deepEqual(mixedPaymentState.rows, [
+    { method: 'Efectivo', amount: '400' },
+    { method: 'Débito', amount: '790' },
+  ])
+  assert.deepEqual(mixedSale.receipt.payments, [
+    { method: 'Efectivo', amount: 400 },
+    { method: 'Débito', amount: 790 },
+  ])
+  const mixedCashMovement = await pool.query(`
+    select amount from public.cash_movements
+    where reference_type = 'sale' and reference_id = $1
+  `, [mixedSale.receipt.dbId])
+  assert.deepEqual(mixedCashMovement.rows, [{ amount: '400' }], 'Sólo la porción en efectivo debe ingresar a caja')
+
   console.log('OK dos cajas compiten por stock sin sobreventa')
   console.log('OK ventas, ingresos y despachos son idempotentes')
   console.log('OK reservas y cambios de estado conservan el inventario')
   console.log('OK los despachos completados se archivan fuera del tablero')
+  console.log('OK el pago mixto registra ambos medios y sólo el efectivo en caja')
 } finally {
   if (organizationId) await pool.query('delete from public.organizations where id = $1', [organizationId]).catch(() => {})
   if (userId) await pool.query('delete from public.app_users where id = $1', [userId]).catch(() => {})

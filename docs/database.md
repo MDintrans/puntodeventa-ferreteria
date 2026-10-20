@@ -117,7 +117,8 @@ de `branch_inventory`, valida el stock disponible y guarda documento, detalle,
 pago y movimiento de stock dentro de una sola transacción PostgreSQL.
 
 - `POST /api/sales`: crea la venta, la asocia a una caja, descuenta stock y
-  registra el pago.
+  registra uno o dos medios de pago. En un pago mixto, los montos deben sumar
+  exactamente el total y sólo la porción en efectivo genera movimiento de caja.
 - `POST /api/receipts`: crea el ingreso, actualiza costo y suma existencias.
 - `POST /api/dispatches`: crea el despacho y reserva existencias.
 - `PATCH /api/dispatches/:id/advance`: materializa la salida o confirma la
