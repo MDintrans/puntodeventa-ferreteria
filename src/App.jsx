@@ -2182,7 +2182,21 @@ function Reports({ products, sales, notify, settings, can, initialQuery = '' }) 
     return (Number(b.id.replace(/\D/g, '')) || 0) - (Number(a.id.replace(/\D/g, '')) || 0)
   }), [normalizedSales, query, paymentFilter, period, day, month, year])
 
-  const totalSales = filteredSales.reduce((sum, sale) => sum + sale.total, 0)
+  const paymentLines = useMemo(() => filteredSales.flatMap((sale) => {
+    const visiblePayments = paymentFilter === 'Todos'
+      ? sale.payments
+      : sale.payments.filter((payment) => payment.method === paymentFilter)
+    return visiblePayments.map((payment, paymentIndex) => ({
+      ...sale,
+      rowId: `${sale.id}-${payment.method}-${paymentIndex}`,
+      paymentMethod: payment.method,
+      paymentAmount: payment.amount,
+      firstPaymentLine: paymentIndex === 0,
+      splitPayment: sale.payments.length > 1,
+    }))
+  }), [filteredSales, paymentFilter])
+
+  const totalSales = paymentLines.reduce((sum, line) => sum + line.paymentAmount, 0)
   const totalItems = filteredSales.reduce((sum, sale) => sum + sale.items, 0)
   const averageTicket = filteredSales.length ? Math.round(totalSales / filteredSales.length) : 0
 
@@ -2203,19 +2217,21 @@ function Reports({ products, sales, notify, settings, can, initialQuery = '' }) 
         label = monthLabels[Number(key) - 1]
       }
       const current = groups.get(key) || { key, label, value: 0 }
-      current.value += sale.total
+      current.value += paymentFilter === 'Todos'
+        ? sale.total
+        : sale.payments.filter((payment) => payment.method === paymentFilter).reduce((sum, payment) => sum + payment.amount, 0)
       groups.set(key, current)
     })
     return [...groups.values()].sort((a, b) => a.key.localeCompare(b.key)).slice(-12)
-  }, [filteredSales, period])
+  }, [filteredSales, period, paymentFilter])
 
   const paymentBreakdown = useMemo(() => {
-    const groups = filteredSales.reduce((result, sale) => {
-      sale.payments.forEach((payment) => { result[payment.method] = (result[payment.method] || 0) + payment.amount })
+    const groups = paymentLines.reduce((result, line) => {
+      result[line.paymentMethod] = (result[line.paymentMethod] || 0) + line.paymentAmount
       return result
     }, {})
     return Object.entries(groups).sort((a, b) => b[1] - a[1])
-  }, [filteredSales])
+  }, [paymentLines])
 
   const categoryTotals = Object.entries(products.reduce((groups, product) => ({ ...groups, [product.category]: (groups[product.category] || 0) + product.stock * product.cost }), {})).sort((a, b) => b[1] - a[1])
   const maxCategory = Math.max(...categoryTotals.map(([, value]) => value), 1)
@@ -2245,16 +2261,16 @@ function Reports({ products, sales, notify, settings, can, initialQuery = '' }) 
         [{ value: `Reporte de ventas · ${periodLabel}`, fontWeight: 'bold', textColor: '#53615E', columnSpan: 8 }],
         [{ value: `Generado el ${new Date().toLocaleString('es-CL')}`, textColor: '#697675', columnSpan: 8 }],
         [],
-        ['Folio', 'Fecha', 'Hora', 'Cliente', 'Vendedor', 'Medio de pago', 'Artículos', 'Total'].map(headerCell),
-        ...filteredSales.map((sale) => [
-          { value: sale.id },
-          { value: sale.date },
-          { value: sale.time },
-          { value: sale.customer },
-          { value: sale.seller },
-          { value: sale.payment },
-          { value: sale.items, type: Number, align: 'center' },
-          { value: sale.total, type: Number, format: '[$$-es-CL]#,##0', align: 'right' },
+        ['Folio', 'Fecha', 'Hora', 'Cliente', 'Vendedor', 'Medio de pago', 'Artículos', 'Monto pagado'].map(headerCell),
+        ...paymentLines.map((line) => [
+          { value: line.id },
+          { value: line.date },
+          { value: line.time },
+          { value: line.customer },
+          { value: line.seller },
+          { value: line.paymentMethod },
+          line.firstPaymentLine ? { value: line.items, type: Number, align: 'center' } : { value: '', align: 'center' },
+          { value: line.paymentAmount, type: Number, format: '[$$-es-CL]#,##0', align: 'right' },
         ]),
         [],
         [
@@ -2305,7 +2321,7 @@ function Reports({ products, sales, notify, settings, can, initialQuery = '' }) 
       </section>
 
       <section className="report-kpis">
-        <div><span className="report-kpi-icon"><CircleDollarSign size={20} /></span><p>Venta bruta<strong>{money.format(totalSales)}</strong></p></div>
+        <div><span className="report-kpi-icon"><CircleDollarSign size={20} /></span><p>{paymentFilter === 'Todos' ? 'Venta bruta' : `Monto en ${paymentFilter}`}<strong>{money.format(totalSales)}</strong></p></div>
         <div><span className="report-kpi-icon blue"><ReceiptText size={20} /></span><p>Ventas encontradas<strong>{number.format(filteredSales.length)}</strong></p></div>
         <div><span className="report-kpi-icon amber"><ShoppingCart size={20} /></span><p>Ticket promedio<strong>{money.format(averageTicket)}</strong></p></div>
         <div><span className="report-kpi-icon purple"><Boxes size={20} /></span><p>Artículos vendidos<strong>{number.format(totalItems)}</strong></p></div>
@@ -2323,9 +2339,9 @@ function Reports({ products, sales, notify, settings, can, initialQuery = '' }) 
       </section>
 
       <section className="data-panel sales-report-table">
-        <div className="panel-heading table-title"><div><span className="eyebrow">Detalle</span><h3>Ventas realizadas</h3></div><span className="table-result-count">{filteredSales.length} resultados</span></div>
-        <div className={`table-scroll report-sales-scroll${filteredSales.length > 10 ? ' is-scrollable' : ''}`} tabIndex={filteredSales.length > 10 ? 0 : undefined} aria-label="Detalle de ventas realizadas"><table><thead><tr><th>Folio</th><th>Fecha</th><th>Hora</th><th>Cliente</th><th>Vendedor</th><th>Medio de pago</th><th>Artículos</th><th>Total</th></tr></thead><tbody>
-          {filteredSales.length ? filteredSales.map((sale) => <tr key={sale.id}><td><strong className="sale-folio">{sale.id}</strong></td><td>{new Date(`${sale.date}T12:00:00`).toLocaleDateString('es-CL')}</td><td>{sale.time}</td><td><strong>{sale.customer}</strong></td><td>{sale.seller}</td><td><span className="payment-badge">{sale.payment}</span></td><td>{sale.items}</td><td><strong>{money.format(sale.total)}</strong></td></tr>) : <tr><td colSpan="8"><EmptyState icon={Search} title="No encontramos ventas" text="Cambia el período o los filtros de búsqueda." /></td></tr>}
+        <div className="panel-heading table-title"><div><span className="eyebrow">Detalle</span><h3>Ventas realizadas</h3></div><span className="table-result-count">{filteredSales.length} ventas{paymentLines.length !== filteredSales.length ? ` · ${paymentLines.length} líneas` : ''}</span></div>
+        <div className={`table-scroll report-sales-scroll${paymentLines.length > 10 ? ' is-scrollable' : ''}`} tabIndex={paymentLines.length > 10 ? 0 : undefined} aria-label="Detalle de ventas realizadas por medio de pago"><table><thead><tr><th>Folio</th><th>Fecha</th><th>Hora</th><th>Cliente</th><th>Vendedor</th><th>Medio de pago</th><th>Artículos</th><th>Monto pagado</th></tr></thead><tbody>
+          {paymentLines.length ? paymentLines.map((line) => <tr key={line.rowId} className={line.splitPayment ? 'split-payment-line' : undefined}><td><strong className="sale-folio">{line.id}</strong></td><td>{new Date(`${line.date}T12:00:00`).toLocaleDateString('es-CL')}</td><td>{line.time}</td><td><strong>{line.customer}</strong></td><td>{line.seller}</td><td><span className="payment-badge">{line.paymentMethod}</span></td><td>{line.firstPaymentLine ? line.items : '—'}</td><td><strong>{money.format(line.paymentAmount)}</strong></td></tr>) : <tr><td colSpan="8"><EmptyState icon={Search} title="No encontramos ventas" text="Cambia el período o los filtros de búsqueda." /></td></tr>}
         </tbody></table></div>
         <div className="report-table-total"><span>Total filtrado</span><strong>{money.format(totalSales)}</strong></div>
       </section>

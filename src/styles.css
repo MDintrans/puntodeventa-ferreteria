@@ -601,13 +601,12 @@ tr.search-highlight { background: #e8f5f2; box-shadow: inset 3px 0 var(--teal); 
   @page receipt-letter { size: letter; margin: 15mm; }
   @page quote { size: A4; margin: 0; }
   html, body { min-width: 0; background: white; }
+  body:is(.printing-receipt, .printing-receipt-letter), body:is(.printing-receipt, .printing-receipt-letter) #root, body:is(.printing-receipt, .printing-receipt-letter) .app-shell, body:is(.printing-receipt, .printing-receipt-letter) .app-main, body:is(.printing-receipt, .printing-receipt-letter) .page-content { width: 100%; height: auto; min-height: 0; max-width: none; margin: 0; padding: 0; overflow: visible; background: white; }
+  body:is(.printing-receipt, .printing-receipt-letter) .app-shell > :not(.app-main), body:is(.printing-receipt, .printing-receipt-letter) .app-main > :not(.page-content), body:is(.printing-receipt, .printing-receipt-letter) .page-content > :not(.receipt-backdrop), body:is(.printing-receipt, .printing-receipt-letter) .receipt-dialog > :not(.receipt-stage) { display: none!important; }
+  body:is(.printing-receipt, .printing-receipt-letter) .receipt-backdrop, body:is(.printing-receipt, .printing-receipt-letter) .receipt-dialog, body:is(.printing-receipt, .printing-receipt-letter) .receipt-stage { position: static; inset: auto; display: block; width: 100%; height: auto; min-height: 0; max-height: none; margin: 0; padding: 0; overflow: visible; border: 0; border-radius: 0; background: white; box-shadow: none; }
   body.printing-receipt { width: 80mm; }
-  body.printing-receipt * { visibility: hidden!important; }
-  body.printing-receipt .receipt-paper, body.printing-receipt .receipt-paper * { visibility: visible!important; }
-  body.printing-receipt .receipt-paper { page: receipt; position: absolute; inset: 0 auto auto 0; width: 80mm; max-width: none; padding: 5mm; border: 0; box-shadow: none; }
-  body.printing-receipt-letter * { visibility: hidden!important; }
-  body.printing-receipt-letter .receipt-paper, body.printing-receipt-letter .receipt-paper * { visibility: visible!important; }
-  body.printing-receipt-letter .receipt-paper { page: receipt-letter; position: absolute; inset: 0 auto auto 50%; transform: translateX(-50%); width: 80mm; max-width: none; padding: 8mm; border: 1px solid #dfe5e3; box-shadow: none; }
+  body.printing-receipt .receipt-paper { page: receipt; position: static; width: 80mm; max-width: none; margin: 0; padding: 5mm; border: 0; box-shadow: none; break-after: avoid-page; }
+  body.printing-receipt-letter .receipt-paper { page: receipt-letter; position: static; width: 80mm; max-width: none; margin: 0 auto; padding: 8mm; border: 1px solid #dfe5e3; box-shadow: none; break-after: avoid-page; }
   body.printing-quote { width: 210mm; }
   body.printing-quote * { visibility: hidden!important; }
   body.printing-quote .quote-paper, body.printing-quote .quote-paper * { visibility: visible!important; }
